@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: rustfs
+
+spec:
+  selector:
+    matchLabels:
+      app: rustfs
+
+  serviceName: rustfs-service
+  
+  template:
+    metadata:
+      labels:
+        app: rustfs
+        
+    spec:
+      containers:
+        - name: rustfs
+          image: rustfs/rustfs:latest
+
+          ports:
+          - containerPort: 9000 # Port for api access
+          - containerPort: 9001 # Port for admin access
+          
+          env:
+          - name: RUSTFS_ADDRESS
+            value: ":9000"
+          - name: RUSTFS_CONSOLE_ADDRESS
+            value: ":9001"
+          - name: RUSTFS_ACCESS_KEY
+            value: "rustfsadmin"
+          - name: RUSTFS_SECRET_KEY
+            value: "rustfsadmin"
+          - name: RUSTFS_CONSOLE_ENABLE
+            value: "true"
+
+          volumeMounts:
+          - name: rustfs-storage
+            mountPath: /data
+
+          command: ["/usr/bin/rustfs"]
+          args: ["/data"]
+
+      # volumes:
+      # - name: rustfs-storage
+      #   persistentVolumeClaim:
+      #     claimName: sfs-pvc
+  
+  volumeClaimTemplates:
+    - metadata:
+        name: rustfs-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
