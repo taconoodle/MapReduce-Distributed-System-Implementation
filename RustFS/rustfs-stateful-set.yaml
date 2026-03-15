@@ -31,9 +31,9 @@ spec:
           - name: RUSTFS_CONSOLE_ADDRESS
             value: ":9001"
           - name: RUSTFS_ACCESS_KEY
-            value: "rustfsadmin"
+            value: "admin"
           - name: RUSTFS_SECRET_KEY
-            value: "rustfsadmin"
+            value: "admin"
           - name: RUSTFS_CONSOLE_ENABLE
             value: "true"
 
@@ -56,4 +56,4 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 2Gi
+            storage: 1Gi
