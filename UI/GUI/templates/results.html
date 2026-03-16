@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MapReduce | Monitoring</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .results-card { background: #1e1e1e; padding: 40px; border-radius: 12px; border: 1px solid #333; text-align: center; width: 500px; }
+        h2 { color: #4ecca3; margin-top: 0; }
+        
+        /* Progress Bar Styles */
+        .progress-container { background: #333; border-radius: 20px; height: 25px; width: 100%; margin: 20px 0; overflow: hidden; }
+        .progress-bar { background: #4ecca3; height: 100%; width: 0%; transition: width 0.5s ease-in-out; }
+        
+        .status-badge { padding: 5px 15px; border-radius: 20px; font-size: 14px; font-weight: bold; text-transform: uppercase; }
+        .status-waiting { background: #f39c12; color: #121212; }
+        .status-complete { background: #4ecca3; color: #121212; }
+        
+        .info-box { background: #000; padding: 15px; border-radius: 6px; text-align: left; font-family: monospace; font-size: 13px; color: #888; margin-bottom: 20px; }
+        .download-btn { display: none; margin-top: 20px; width: 100%; padding: 12px; background: #4ecca3; color: #1a1a2e; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div class="results-card">
+    <h2>Job Monitor</h2>
+    <div class="info-box">
+        > Job Name: <span id="jobNameDisplay">None</span><br>
+        > Job ID: <span id="jobIdDisplay">None</span>
+    </div>
+
+    <p id="statusLabel">Status: <span id="badge" class="status-badge status-waiting">Initializing</span></p>
+
+    <div class="progress-container">
+        <div id="progressBar" class="progress-bar"></div>
+    </div>
+
+    <button id="downloadBtn" class="download-btn" onclick="downloadResult()">
+        DOWNLOAD JSON RESULT
+    </button>
+
+    <button onclick="window.location.href='/dashboard'" style="background: transparent; color: #888; border: none; cursor: pointer; margin-top: 15px;">
+        ← Back to Dashboard
+    </button>
+</div>
+
+<script>
+    // 1. On page load, get the "Receipt" from the drawer (LocalStorage)
+    const activeJobId = localStorage.getItem('active_job_id');
+    const activeJobName = localStorage.getItem('active_job_name');
+
+    if (activeJobId) {
+        document.getElementById('jobIdDisplay').innerText = activeJobId;
+        document.getElementById('jobNameDisplay').innerText = activeJobName;
+        startPolling(activeJobId);
+    } else {
+        document.getElementById('statusLabel').innerText = "No active job detected.";
+    }
+
+    async function startPolling(jobId) {
+        const progressBar = document.getElementById('progressBar');
+        const badge = document.getElementById('badge');
+        let progress = 0;
+
+        // 2. Set an interval to check status every 2 seconds
+        const pollInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`/api/job-status/${jobId}`);
+                const data = await response.json();
+
+                console.log("Status Update:", data);
+
+                if (data.status === "COMPLETED") {
+                    // Stop polling
+                    clearInterval(pollInterval);
+                    
+                    // Update UI
+                    progressBar.style.width = "100%";
+                    badge.innerText = "COMPLETED";
+                    badge.className = "status-badge status-complete";
+                    document.getElementById('downloadBtn').style.display = "block";
+                } else {
+                    // Simulate progress bar moving slowly while waiting
+                    if (progress < 90) progress += 5;
+                    progressBar.style.width = progress + "%";
+                    badge.innerText = data.status;
+                }
+            } catch (err) {
+                console.error("Polling error:", err);
+            }
+        }, 2000);
+    }
+
+    function downloadResult() {
+        const jobId = localStorage.getItem('active_job_id');
+        // This triggers your Python StreamingResponse route!
+        window.location.href = `/api/download/${jobId}`;
+    }
+</script>
+
+</body>
+</html>

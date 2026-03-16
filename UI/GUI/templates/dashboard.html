@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MapReduce | Submit</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .upload-card { background: #1e1e1e; padding: 40px; border-radius: 12px; border: 2px dashed #444; text-align: center; width: 400px; }
+        .upload-card:hover { border-color: #4ecca3; }
+        h2 { color: #4ecca3; margin-top: 0; }
+        input[type="file"] { display: none; }
+        .custom-label { background: #4ecca3; color: #1a1a2e; padding: 12px 24px; border-radius: 6px; cursor: pointer; display: inline-block; font-weight: bold; margin-bottom: 20px; }
+        .status-box { margin-top: 20px; font-family: monospace; font-size: 12px; color: #888; text-align: left; background: #000; padding: 10px; border-radius: 4px; height: 60px; overflow: hidden; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+
+<div class="upload-card">
+    <h2>Submit Job JSON</h2>
+    <p>Upload your combined Job Specification</p>
+    
+    <label for="jobFile" class="custom-label">Choose JSON File</label>
+    <input type="file" id="jobFile" accept=".json" onchange="updateStatus()">
+
+    <div id="status" class="status-box">
+        > System Ready...<br>
+        > Waiting for Job JSON...
+    </div>
+
+    <button id="deployBtn" onclick="submitJob()" style="margin-top: 20px; width: 100%; padding: 10px; background: transparent; color: #4ecca3; border: 1px solid #4ecca3; cursor: pointer;">
+        DEPLOY TO CLUSTER
+    </button>
+
+    <button onclick="window.location.href='/results'" style="margin-top: 10px; width: 100%; padding: 10px; background: #333; color: white; border: none; cursor: pointer; border-radius: 6px;">
+        VIEW RESULTS
+    </button>
+</div>
+
+<script>
+    function updateStatus() {
+        const file = document.getElementById('jobFile').files[0];
+        if (file) {
+            document.getElementById('status').innerHTML = `> Selected: ${file.name}<br>> Size: ${file.size} bytes<br>> Ready for upload.`;
+        }
+    }
+
+    async function submitJob() {
+        const fileInput = document.getElementById('jobFile');
+        const statusBox = document.getElementById('status');
+        const deployBtn = document.getElementById('deployBtn');
+        
+        if (fileInput.files.length === 0) {
+            alert("Please select a .json file first!");
+            return;
+        }
+
+        // Visual feedback
+        deployBtn.disabled = true;
+        statusBox.innerHTML = "> Uploading to Middleware...<br>> Contacting Manager Service...";
+
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]); 
+
+        try {
+            const response = await fetch('/api/submit-job', {
+                method: 'POST',
+                body: formData 
+            });
+
+            const result = await response.json();
+            console.log("Server response:", result);
+
+            if (result.status === "success") {
+                // --- THE KEY PART ---
+                // Save the job_id we got from the server into LocalStorage
+                localStorage.setItem('active_job_id', result.job_id);
+                localStorage.setItem('active_job_name', fileInput.files[0].name);
+
+                statusBox.innerHTML = `> SUCCESS!<br>> Job ID: ${result.job_id}<br>> Redirecting to monitor...`;
+
+                // Wait 1.5 seconds so you can see the success message, then move
+                setTimeout(() => {
+                    window.location.href = '/results';
+                }, 1500);
+            } else {
+                statusBox.innerHTML = `> ERROR: ${result.message}`;
+                deployBtn.disabled = false;
+            }
+        } catch (error) {
+            console.error("Fetch error:", error);
+            statusBox.innerHTML = "> CRITICAL ERROR: Could not reach UI server.";
+            deployBtn.disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>
