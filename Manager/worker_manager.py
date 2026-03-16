@@ -2,6 +2,7 @@ from kubernetes import client, config
 import redis
 import psycopg2
 import boto3
+import botocore
 from botocore.client import Config
 
 POSTGRES_USERNAME = 'admin'
@@ -49,7 +50,7 @@ def spawn_test_pods(count):
     v1 = client.AppsV1Api()
     v1.create_namespaced_deployment(namespace="default", body=deployment)
 
-def manager_init():
+def init_database():
     db = psycopg2.connect(
         host=POSTGRES_HOST_URL,
         port=5432,
@@ -58,6 +59,9 @@ def manager_init():
         password=POSTGRES_PASSWORD
     )
     
+    return db
+    
+def init_s3_storage():
     s3 = boto3.client(
         's3',
         endpoint_url=RUSTFS_URL,
@@ -67,10 +71,60 @@ def manager_init():
         region_name='us-east-1' # Apparently RustFS expects us to use us-east-1
     )
     
-    s3.list_buckets()
+    return s3
+
+def manager_init():
+    s3 = init_s3_storage()
+    db = init_database()
+    
+    return s3, db
+    
+    
+def create_bucket(s3_client, bucket_name):
+    try:
+        s3_client.create_bucket(Bucket=bucket_name)
+        print(f'Bucket {bucket_name} created.')
+    except s3_client.exceptions.BucketAlreadyExists:
+        print(f'Bucket {bucket_name} already exists.')
+    except botocore.exceptions.ClientError as e:
+        print(f'Unexpected error occured: {e}')
+        
+ 
+def test_s3(s3_client):
+    bucket_name = 'test-bucket'
+    
+    create_bucket(s3_client, bucket_name)
+    print(f'Created bucket {bucket_name}')
+    
+    buckets = s3_client.list_buckets()
+    print('Buckets found:')
+    for bucket in buckets['Buckets']:
+        print(f'\t{bucket['Name']}')
+        
+    s3_client.upload_file(Filename='test.txt', Bucket=bucket_name, Key='test.txt')
+    print('File "test.txt" uploaded')
+    
+    print(f'Now printing objects in {bucket_name}:')
+    objects_in_bucket = s3_client.list_objects_v2(Bucket=bucket_name)
+    for obj in objects_in_bucket.get('Contents', []):
+        print(f'\t{obj['Key']} - ({obj['Size']} bytes)')
+    
+    s3_client.download_file(Bucket=bucket_name, Key='test.txt', Filename='download-test.txt')
+    print('File should be have been downloaded as "download-test.txt"')
+    
+    s3_client.delete_object(Bucket=bucket_name, Key='test.txt')
+    print('Object deleted.')
+
+    s3_client.delete_bucket(Bucket=bucket_name)
+    print('Bucket deleted.')
     
 def add_job_to_db():
     return
 
-# spawn_test_pods(3)
-manager_init()
+
+if __name__ == "__main__":
+    # s3, db = manager_init()
+    s3 = init_s3_storage()
+    # spawn_test_pods(3)
+    
+    test_s3(s3)
