@@ -1,16 +1,9 @@
 from kubernetes import client, config
 import redis
-import psycopg2
-import boto3
-from botocore.client import Config
 
-POSTGRES_USERNAME = 'admin'
-POSTGRES_PASSWORD = 'admin'
-POSTGRES_HOST_URL = 'localhost'
+from database import Database
+from storage import S3Storage
 
-RUSTFS_USERNAME = 'admin'
-RUSTFS_PASSWORD = 'admin'
-RUSTFS_URL = 'http://localhost:9000'
 
 REDIS_USERNAME = 'admin'
 REDIS_PASSWORD = 'admin'
@@ -48,29 +41,18 @@ def spawn_test_pods(count):
     
     v1 = client.AppsV1Api()
     v1.create_namespaced_deployment(namespace="default", body=deployment)
+    
 
-def manager_init():
-    db = psycopg2.connect(
-        host=POSTGRES_HOST_URL,
-        port=5432,
-        dbname='distributed_db',
-        user=POSTGRES_USERNAME,
-        password=POSTGRES_PASSWORD
-    )
+if __name__ == "__main__":
+    s3 = S3Storage()
+    s3.init_s3_storage()
+    s3.test_s3()
+    s3.close()
     
-    s3 = boto3.client(
-        's3',
-        endpoint_url=RUSTFS_URL,
-        aws_access_key_id=RUSTFS_USERNAME,
-        aws_secret_access_key=RUSTFS_PASSWORD,
-        config=Config(signature_version='s3v4'), # The version of the signatures the authenticates AWS requests. RustFS wants s3v4
-        region_name='us-east-1' # Apparently RustFS expects us to use us-east-1
-    )
+    # db = Database()
+    # db.init_database()
+    # db.get_existing_tables()
+    # db.test_db()
+    # db.close()
+    # spawn_test_pods(3)
     
-    s3.list_buckets()
-    
-def add_job_to_db():
-    return
-
-# spawn_test_pods(3)
-manager_init()
