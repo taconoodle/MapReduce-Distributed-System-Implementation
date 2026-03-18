@@ -117,6 +117,22 @@ class Database:
         return jobs
     
     
+    def get_next_pending_job(self):
+        select_query = '''
+            SELECT * FROM job_metadata.jobs
+            WHERE status = 'PENDING'
+            ORDER BY creation_time DESC
+            LIMIT 1;
+        '''
+        
+        with self.conn.cursor() as cur:
+            cur.execute(select_query)
+            job = cur.fetchone()
+            
+        return job
+        
+    
+    
     def delete_job(self, job_uuid):
         delete_query = '''
             DELETE FROM jobs

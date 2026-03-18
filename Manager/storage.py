@@ -35,8 +35,25 @@ class S3Storage:
             print(f'Bucket {bucket_name} already exists.')
         except botocore.exceptions.ClientError as e:
             print(f'Unexpected error occured: {e}')
-            
         return
+    
+    
+    def add_to_bucket(self, bucket_name, filename, key=None):
+        if key is None:
+            key = filename
+            
+        self.conn.upload_file(Filename=filename, Bucket=bucket_name, Key=key)
+    
+    
+    def get_from_bucket(self, bucket_name, key, filename):
+        if filename is None:
+            filename = key
+            
+        self.conn.download_file(Key=key, Bucket=bucket_name, Filename=filename)
+        
+    
+    def remove_from_bucket(self, bucket_name, key):
+        self.conn.delete_object(Bucket=bucket_name, Key=key)
     
     
     def close(self):
