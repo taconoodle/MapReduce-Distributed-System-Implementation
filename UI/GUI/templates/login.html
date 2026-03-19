@@ -17,26 +17,20 @@
             box-shadow: 0 10px 25px rgba(0,0,0,0.5); 
             width: 350px;
             border: 1px solid #0f3460;
+            text-align: center;
         }
-        h2 { text-align: center; margin-bottom: 25px; color: #4ecca3; }
+        h2 { margin-bottom: 25px; color: #4ecca3; }
         
-        .input-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 8px; font-size: 14px; color: #95a5a6; }
-        
-        input { 
-            width: 100%; 
-            padding: 12px; 
-            border-radius: 6px; 
-            border: 1px solid #0f3460; 
-            background: #1a1a2e; 
-            color: white;
-            box-sizing: border-box; /* Crucial for padding */
+        .description {
+            color: #95a5a6;
+            font-size: 14px;
+            margin-bottom: 30px;
+            line-height: 1.5;
         }
-        input:focus { outline: none; border-color: #4ecca3; }
 
         .login-btn { 
             width: 100%; 
-            padding: 12px; 
+            padding: 14px; 
             background: #4ecca3; 
             border: none; 
             border-radius: 6px; 
@@ -45,10 +39,16 @@
             cursor: pointer; 
             font-size: 16px;
             transition: 0.3s;
+            text-decoration: none;
+            display: inline-block;
         }
-        .login-btn:hover { background: #45b393; transform: translateY(-2px); }
+        .login-btn:hover { 
+            background: #45b393; 
+            transform: translateY(-2px); 
+            box-shadow: 0 5px 15px rgba(78, 204, 163, 0.3);
+        }
         
-        .footer { margin-top: 20px; font-size: 12px; text-align: center; color: #546e7a; }
+        .footer { margin-top: 30px; font-size: 12px; color: #546e7a; }
     </style>
 </head>
 <body>
@@ -56,33 +56,19 @@
     <div class="login-box">
         <h2>Cluster Login</h2>
         
-        <form id="loginForm">
-            <div class="input-group">
-                <label for="username">Username</label>
-                <input type="text" id="username" placeholder="e.g. admin" required>
-            </div>
-            
-            <div class="input-group">
-                <label for="password">Password</label>
-                <input type="password" id="password" placeholder="••••••••" required>
-            </div>
-            
-            <button type="submit" class="login-btn">Sign In</button>
-        </form>
+        <p class="description">
+            Please sign in to manage your MapReduce jobs.
+        </p>
+
+        <!-- Direct link to FastAPI trigger -->
+        <a href="/login" class="login-btn">
+            Sign In with Keycloak
+        </a>
 
         <div class="footer">
-            MapReduce v1.0 | Secured by Keycloak
+            MapReduce v1.0 | Secured by OpenID Connect
         </div>
     </div>
-
-    <script>
-        document.getElementById('loginForm').onsubmit = function(e) {
-            e.preventDefault();
-            // For now, it just redirects. Later, this is where your 
-            // Fetch() call to Keycloak/Auth-Service will go!
-            window.location.href = 'dashboard';
-        };
-    </script>
 
 </body>
 </html>

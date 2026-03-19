@@ -44,7 +44,7 @@
 </div>
 
 <script>
-    // 1. On page load, get the "Receipt" from the drawer (LocalStorage)
+    // On page load, get the localStorage info
     const activeJobId = localStorage.getItem('active_job_id');
     const activeJobName = localStorage.getItem('active_job_name');
 
@@ -61,31 +61,37 @@
         const badge = document.getElementById('badge');
         let progress = 0;
 
-        // 2. Set an interval to check status every 2 seconds
+        //  Set an interval to check status every 2 seconds
         const pollInterval = setInterval(async () => {
             try {
                 const response = await fetch(`/api/job-status/${jobId}`);
-                const data = await response.json();
 
+                // --- THE AUTH CHECK ---
+                if (response.status === 401) {
+                    clearInterval(pollInterval); // Stop trying to hit the server
+                    alert("Your session has expired. Redirecting to login.");
+                    window.location.href = '/';
+                    return;
+                }
+
+                const data = await response.json();
                 console.log("Status Update:", data);
 
                 if (data.status === "COMPLETED") {
-                    // Stop polling
                     clearInterval(pollInterval);
-                    
-                    // Update UI
                     progressBar.style.width = "100%";
                     badge.innerText = "COMPLETED";
                     badge.className = "status-badge status-complete";
                     document.getElementById('downloadBtn').style.display = "block";
+                    document.getElementById('downloadBtn').style.background = "#4ecca3"; // Ensure visible
                 } else {
-                    // Simulate progress bar moving slowly while waiting
                     if (progress < 90) progress += 5;
                     progressBar.style.width = progress + "%";
-                    badge.innerText = data.status;
+                    badge.innerText = data.status || "PROCESSING";
                 }
             } catch (err) {
                 console.error("Polling error:", err);
+                // We don't clear the interval here in case it's just a temporary network problem
             }
         }, 2000);
     }
