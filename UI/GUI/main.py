@@ -1,4 +1,5 @@
 import json
+from utils import get_user_from_cookie
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse
@@ -55,9 +56,23 @@ async def auth_callback(code: str):
 
 @app.get("/dashboard")
 async def dashboard(request: Request):
-    if not request.cookies.get("auth_token"):
+    user = await get_user_from_cookie(request)
+    if not user:
         return RedirectResponse(url="/")
+    
+    # User dashboard only needs standard job submission features
     return FileResponse('templates/dashboard.html')
+
+@app.get("/admin")
+async def admin_portal(request: Request):
+    user = await get_user_from_cookie(request)
+    
+    # THE GUARD: If not an admin, kick them back to the user dashboard
+    if not user or not user.get("is_admin"):
+        return RedirectResponse(url="/dashboard?error=unauthorized")
+    
+    # Admin dashboard shows worker config, user management, etc.
+    return FileResponse('templates/admin_dashboard.html')
 
 @app.get("/logout")
 async def logout():
