@@ -40,20 +40,20 @@ class S3Storage:
     
     def upload_to_bucket(self, bucket_name, filename, key=None):
         if key is None:
-            key = filename     
+            key = filename
         self.conn.upload_file(Filename=filename, Bucket=bucket_name, Key=key)
-    
-    
+
+
     def download_from_bucket(self, bucket_name, key, filename=None):
         if filename is None:
             filename = key
         self.conn.download_file(Key=key, Bucket=bucket_name, Filename=filename)
-        
-    
+
+
     def delete_from_bucket(self, bucket_name, key):
         self.conn.delete_object(Bucket=bucket_name, Key=key)
-    
-    
+
+
     def close(self):
         if self.conn is not None:
             self.conn.close()
@@ -123,7 +123,7 @@ class S3Storage:
 
         for line in response['Body'].iter_lines():
             yield line
-        
+
         
 if __name__ == "__main__":
     s3 = S3Storage()
