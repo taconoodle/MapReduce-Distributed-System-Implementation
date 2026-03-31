@@ -27,7 +27,7 @@ spec:
           value: "admin"
         volumeMounts:
         - name: postgres-storage
-          mountPath: /database 
+          mountPath: /var/lib/postgresql/data
   volumeClaimTemplates:
     - metadata:
         name: postgres-storage

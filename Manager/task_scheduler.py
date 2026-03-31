@@ -11,6 +11,7 @@ class Redis:
         self.pool = None
         self.conn = None
         
+        
     def init_redis(self):
         try:
             self.pool = redis.ConnectionPool(#with pool can handle more connections
@@ -27,6 +28,7 @@ class Redis:
         except ConnectionError as e:
             print(f"Connection error: {e}")
             return None
+
 
     def add_task_to_queue(self, job_id, filepath, task_type="map"):#we will see if map is important
         pipe = self.conn.pipeline()
@@ -54,6 +56,7 @@ class Redis:
             print(f"Failed to add task: {e}")
             return None
 
+
     def get_next_task(self, timeout=0):
         try:
             res = self.conn.brpop("task_queue", timeout=timeout)#The brpop return a tuple
@@ -67,6 +70,7 @@ class Redis:
             print("Connection with redis is gone.")
         return None
     
+    
     def complete_task(self, job_id, task_id, result_path):
         task_key = f"task:{task_id}"
         pipe = self.conn.pipeline()
@@ -74,6 +78,7 @@ class Redis:
         pipe.hset(task_key, "result_path", result_path)
         pipe.incr(f"job:{job_id}:completed_count")
         pipe.execute()
+
 
     def check_job_status(self, job_id):
         total = self.conn.get(f"job:{job_id}:next_task_id")#Return the value from one key
@@ -87,11 +92,12 @@ class Redis:
             "done": completed_tasks >= total_tasks and total_tasks > 0
         }
 
+
     def delete_task(self, job_id, task_id):
         pipe = self.conn.pipeline()
         pipe.delete(f"task:{task_id}")
         pipe.srem(f"job:{job_id}:tasks", task_id)#Remove one specific value from one set
-        pipe.lrem("task_queue", 0, task_id)#Αφαιρεί στοιχεία από μια λίστα και με το 0 αφαιρεί όλες τις εμφανίσεις του task id.
+        pipe.lrem("task_queue", task_id)#Αφαιρεί στοιχεία από μια λίστα και με το 0 αφαιρεί όλες τις εμφανίσεις του task id.
         pipe.execute()
         print(f"Task {task_id} deleted.")
 
@@ -103,7 +109,7 @@ class Redis:
         pipe = self.conn.pipeline()
         for tid in task_ids:
             pipe.delete(f"task:{tid}")
-            pipe.lrem("task_queue", 0, tid)
+            pipe.lrem("task_queue", tid)
         
         pipe.delete(tasks_set_key)
         pipe.delete(f"job:{job_id}:next_task_id")

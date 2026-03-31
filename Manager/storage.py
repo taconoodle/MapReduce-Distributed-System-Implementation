@@ -14,7 +14,7 @@ class S3Storage:
         self.conn = None
         
     
-    def init_s3_storage(self):
+    def init_s3(self):
         self.conn = boto3.client(
             's3',
             endpoint_url=RUSTFS_URL,
@@ -38,21 +38,19 @@ class S3Storage:
         return
     
     
-    def add_to_bucket(self, bucket_name, filename, key=None):
+    def upload_to_bucket(self, bucket_name, filename, key=None):
         if key is None:
-            key = filename
-            
+            key = filename     
         self.conn.upload_file(Filename=filename, Bucket=bucket_name, Key=key)
     
     
-    def get_from_bucket(self, bucket_name, key, filename):
+    def download_from_bucket(self, bucket_name, key, filename=None):
         if filename is None:
             filename = key
-            
         self.conn.download_file(Key=key, Bucket=bucket_name, Filename=filename)
         
     
-    def remove_from_bucket(self, bucket_name, key):
+    def delete_from_bucket(self, bucket_name, key):
         self.conn.delete_object(Bucket=bucket_name, Key=key)
     
     
@@ -63,31 +61,68 @@ class S3Storage:
             
     def test_s3(self):
         bucket_name = 'test-bucket'
-        
+
         self.create_bucket(bucket_name)
         print(f'Created bucket {bucket_name}')
-        
+
         buckets = self.conn.list_buckets()
         print('Buckets found:')
         for bucket in buckets['Buckets']:
             print(f'\t{bucket['Name']}')
-            
+
         self.conn.upload_file(Filename='test.txt', Bucket=bucket_name, Key='test.txt')
         print('File "test.txt" uploaded')
-        
+
         print(f'Now printing objects in {bucket_name}:')
         objects_in_bucket = self.conn.list_objects_v2(Bucket=bucket_name)
         for obj in objects_in_bucket.get('Contents', []):
             print(f'\t{obj['Key']} - ({obj['Size']} bytes)')
-        
+
         self.conn.download_file(Bucket=bucket_name, Key='test.txt', Filename='download-test.txt')
         print('File should be have been downloaded as "download-test.txt"')
-        
+
         self.conn.delete_object(Bucket=bucket_name, Key='test.txt')
         print('Object deleted.')
 
         self.conn.delete_bucket(Bucket=bucket_name)
         print('Bucket deleted.')
+
+
+    def copy_file_part(self, upload_id, src_bucket, src_key, dst_bucket, dst_key=None, byte_amount_mb=64, byte_offset=0, part_number=1):
+        if dst_key is None:
+            dst_key = src_key
+
+        file_size = self.conn.head_objet(Bucket=src_bucket, Key=src_key)['ContentLength']
+        byte_amount = byte_amount_mb * (1024 ** 2)
+
+        first_byte = byte_offset
+        last_byte = min(byte_offset + byte_amount - 1, file_size - 1)
+        byte_range = f'bytes={first_byte}-{last_byte}'
+
+        copy_source = {
+            'Bucket': src_bucket,
+            'Key': src_key
+        }
+
+        response = self.conn.upload_part_copy(
+            UploadId=upload_id,
+            Bucket=dst_bucket,
+            Key=dst_key,
+            PartNumber=part_number, # PartNumber needs to be 1 to 10000 (Source: RTFM)
+            CopySource=copy_source,
+            CopySourceRange=byte_range
+        )
+        return response
+
+
+    def stream_file_lines(self, bucket, key):
+        response = self.conn.get_object(
+            Bucket=bucket,
+            Key=key
+        )
+
+        for line in response['Body'].iter_lines():
+            yield line
         
         
 if __name__ == "__main__":
