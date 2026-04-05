@@ -1,6 +1,7 @@
 import boto3
 import botocore
 from botocore.client import Config
+import json
 
 
 RUSTFS_USERNAME = 'admin'
@@ -37,7 +38,13 @@ class S3Storage:
             print(f'Unexpected error occured: {e}')
         return
     
-    
+    def create_object(self, bucket, key, body):
+        self.conn.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body
+        )
+
     def upload_to_bucket(self, bucket_name, filename, key=None):
         if key is None:
             key = filename
@@ -120,9 +127,27 @@ class S3Storage:
             Bucket=bucket,
             Key=key
         )
-
         for line in response['Body'].iter_lines():
-            yield line
+            pairs = json.loads(line)
+            for key, value in pairs.items():
+                yield key, value
+
+
+    def create_paginator(self, bucket, prefix=''):
+        paginator = self.conn.get_paginator('list_objects_v2')
+        paginator_parameters = {
+            'Bucket': bucket,
+            'Prefix': prefix,
+            'Delimiter': '/'
+        }
+        page_iterator = paginator.paginate(**paginator_parameters)
+        return page_iterator
+
+    def stream_paginator_pages(self, bucket, prefix=''):
+        paginator = self.create_paginator(bucket, prefix)
+        for page in paginator:
+            yield page
+
 
         
 if __name__ == "__main__":

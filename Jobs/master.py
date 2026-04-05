@@ -2,7 +2,7 @@ from Manager.database import Database
 from Manager.task_scheduler import Redis
 from Manager.storage import S3Storage
 
-from filesplit.split import Split
+# from filesplit.split import Split
 
 class Master:
     def __init__(self, job_id=None):
