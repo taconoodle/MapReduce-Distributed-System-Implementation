@@ -2,6 +2,7 @@ import boto3
 import botocore
 from botocore.client import Config
 import json
+from itertools import groupby
 
 
 RUSTFS_USERNAME = 'admin'
@@ -133,6 +134,24 @@ class S3Storage:
                 yield key, value
 
 
+    def get_json_body(self, bucket, key):
+        body = self.conn.get_object(
+            Bucket=bucket,
+            Key=key
+        )['Body']
+        return json.load(body)
+
+    def sort_json(self, src_bucket, src_key, dst_bucket, dst_key):
+        data = self.get_json_body(src_bucket, src_key)
+
+        data = dict(sorted(data.items(), key=lambda item: item[0]))
+        self.conn.put_object (
+            Bucket=dst_bucket,
+            Key=dst_key,
+            Body=json.dumps(data)
+        )
+
+
     def create_paginator(self, bucket, prefix=''):
         paginator = self.conn.get_paginator('list_objects_v2')
         paginator_parameters = {
@@ -148,7 +167,59 @@ class S3Storage:
         for page in paginator:
             yield page
 
+    def stream_keys_in_dir(self, bucket, prefix):
+        for page in self.stream_paginator_pages(bucket, prefix):
+            for contents in page['Contents']:
+                yield contents['Key']
 
+    def upload_sorted_data_in_chunks(self, bucket, key, data):
+        mpu = self.conn.create_multipart_upload(
+            Bucket=bucket,
+            Key=key
+        )
+        upload_id = mpu['UploadId']
+        parts = []
+        part_number = 1
+        buffer = []
+        buffer_size = 0
+        for key, group in groupby(data, key=lambda pair: pair[0]):
+            values = [value for _, value in group]
+            line = json.dumps({key: values}) + '\n'
+            line = line.encode('utf-8')
+            buffer_size += len(line)
+
+            if buffer_size >= (5 * (1024 ** 2)):
+                chunk = b''.join(buffer)
+                response = self.conn.upload_part(
+                    Bucket=bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    Body=chunk
+                )
+                parts.append({'PartNumber': part_number, 'ETag': response['ETag']})
+                part_number += 1
+                buffer = []
+                buffer_size = 0
+
+        # Handle last chunk
+        if buffer:
+            chunk = b''.join(buffer)
+            response = self.conn.upload_part(
+                Bucket=bucket,
+                Key=key,
+                UploadId=upload_id,
+                PartNumber=part_number,
+                Body=chunk
+            )
+            parts.append({'PartNumber': part_number, 'ETag': response['ETag']})
+
+        self.conn.complete_multipart_upload(
+            Bucket=bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={'Parts': parts}
+        )
         
 if __name__ == "__main__":
     s3 = S3Storage()
