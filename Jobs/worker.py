@@ -82,7 +82,7 @@ class ShuffleWorker:
 
         # Merge the sorted files, sorting them (use heapq.merge())
         shuffler_sorted_keys = self.s3.stream_keys_in_dir(data_bucket, temp_output_prefix)
-        streams = [self.s3.stream_file_lines(data_bucket, key) for key in shuffler_sorted_keys]
+        streams = [self.s3.stream_file_pairs(data_bucket, key) for key in shuffler_sorted_keys]
         merged_data = heapq.merge(*streams, key=lambda pair: pair[0])
 
         # Upload final file
@@ -90,9 +90,44 @@ class ShuffleWorker:
         exit(0)
     
 class ReduceWorker:
+    def __init__(self):
+        self.job_id = None
+        self.reducer_id = None
+        self.reduce_fn = None
+        self.s3 = S3Storage()
+
+
+    def reduce_lines(self, data):
+        results = dict()
+        previous_key = None
+        values_buffer = []
+        for key, values in data:
+            if key != previous_key and previous_key is not None:
+                result_key, result_value = self.reduce_fn((previous_key, values_buffer))
+
+                values_buffer.clear()
+                previous_key = key
+                yield result_key, result_value
+
+            values_buffer.extend(values)
+
+        # Handle last key
+        if previous_key is not None:
+            result_key, result_value = self.reduce_fn((previous_key, values_buffer))
+            yield result_key, result_value
+
     def run(self):
         # Get the file from RustFS/jobs/{job_id}/intermediate_files/shuffler_outputs/reducer_{reducer_id}/
-                
+        data_bucket = 'RustFS'
+        common_key_prefix = f'jobs/{self.job_id}'
+        input_data_prefix = common_key_prefix + f'intermediate_files/shuffler_outputs/reducer_{self.reducer_id}/shuffler_{self.reducer_id}.json'
+        output_prefix = common_key_prefix + f'output_files/job_{self.job_id}.json'
+
+        input_lines = self.s3.stream_file_pairs(data_bucket, input_data_prefix)
+        reducer = self.reduce_lines(input_lines)
+        self.s3.upload_sorted_data_in_chunks(data_bucket, output_prefix, reducer)
+
+
         # For each (key, value) pair in the data, append value to key's list
         # If the key is different from the previous, call the reducer function on the previous key and its values
         # Store the result of the reducer function in the results dict

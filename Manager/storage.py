@@ -123,7 +123,7 @@ class S3Storage:
         return response
 
 
-    def stream_file_lines(self, bucket, key):
+    def stream_file_pairs(self, bucket, key):
         response = self.conn.get_object(
             Bucket=bucket,
             Key=key
