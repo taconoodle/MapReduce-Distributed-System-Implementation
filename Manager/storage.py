@@ -1,5 +1,5 @@
 import boto3
-import botocore
+from botocore.exceptions import *
 from botocore.client import Config
 import json
 from itertools import groupby
@@ -9,6 +9,8 @@ RUSTFS_USERNAME = 'admin'
 RUSTFS_PASSWORD = 'admin'
 RUSTFS_URL = 'http://localhost:9000'
 
+class S3ConnectionError(Exception):
+    pass
 
 class S3Storage:
     
@@ -17,16 +19,27 @@ class S3Storage:
         
     
     def init_s3(self):
-        self.conn = boto3.client(
-            's3',
-            endpoint_url=RUSTFS_URL,
-            aws_access_key_id=RUSTFS_USERNAME,
-            aws_secret_access_key=RUSTFS_PASSWORD,
-            config=Config(signature_version='s3v4'), # The version of the signatures the authenticates AWS requests. RustFS wants s3v4
-            region_name='us-east-1' # Apparently RustFS expects us to use us-east-1
-        )
-        
-        return self.conn
+        try:
+            self.conn = boto3.client(
+                's3',
+                endpoint_url=RUSTFS_URL,
+                aws_access_key_id=RUSTFS_USERNAME,
+                aws_secret_access_key=RUSTFS_PASSWORD,
+                config=Config(signature_version='s3v4'), # The version of the signatures the authenticates AWS requests. RustFS wants s3v4
+                region_name='us-east-1' # Apparently RustFS expects us to use us-east-1
+            )
+            return self.conn
+        except EndpointConnectionError as e:
+            raise S3ConnectionError('Could not reach S3 endpoint')
+        except ClientError as e:
+            code = e.response['Error']['Code']
+            match code:
+                case 'InvalidAccessKeyId':
+                    raise S3ConnectionError('Invalid username')
+                case 'SignatureDoesNotMatch':
+                    raise S3ConnectionError('Invalid password')
+                case _:
+                    raise S3ConnectionError(f'Unknown error: {e}')
     
     
     def create_bucket(self, bucket_name):
@@ -35,7 +48,7 @@ class S3Storage:
             print(f'Bucket {bucket_name} created.')
         except self.conn.exceptions.BucketAlreadyExists:
             print(f'Bucket {bucket_name} already exists.')
-        except botocore.exceptions.ClientError as e:
+        except ClientError as e:
             print(f'Unexpected error occured: {e}')
         return
     

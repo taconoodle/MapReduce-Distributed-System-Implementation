@@ -127,11 +127,4 @@ class ReduceWorker:
         reducer = self.reduce_lines(input_lines)
         self.s3.upload_sorted_data_in_chunks(data_bucket, output_prefix, reducer)
 
-
-        # For each (key, value) pair in the data, append value to key's list
-        # If the key is different from the previous, call the reducer function on the previous key and its values
-        # Store the result of the reducer function in the results dict
-        
-        # Dump the dictionary to the JSON output file of the worker
-        # Store the output in RustFS/jobs/{job_id}/intermediate_files/reducer_outputs/reducer_{reducer_id}.json
         exit(0)
