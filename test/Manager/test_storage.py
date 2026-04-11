@@ -593,3 +593,108 @@ class TestS3Storage:
             Key='test-dst-key',
             Body=json.dumps({"0": "value2", "1": "value3", "2": "value1"})
         )
+
+    def test_create_list_objects_paginator_success(self, s3, mock_conn):
+        mock_paginator = MagicMock()
+        mock_iterator = MagicMock()
+        mock_conn.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = mock_iterator
+
+        result = s3.create_list_objects_paginator(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        mock_conn.get_paginator.assert_called_once_with('list_objects_v2')
+        mock_paginator.paginate.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Prefix=TEST_KEY_NAME,
+            Delimiter='/'
+        )
+        assert result == mock_iterator
+
+    def test_create_list_objects_paginator_default_args(self, s3, mock_conn):
+        mock_paginator = MagicMock()
+        mock_conn.get_paginator.return_value = mock_paginator
+
+        s3.create_list_objects_paginator(TEST_BUCKET_NAME)
+        mock_paginator.paginate.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Prefix="",
+            Delimiter='/'
+        )
+
+    def test_stream_paginator_pages(self, s3):
+        mock_pages = [
+            {'Contents': [{'Key': 'key1'}, {'Key': 'key2'}]},
+            {'Contents': [{'Key': 'key3'}, {'Key': 'key4'}]}
+        ]
+
+        with patch.object(s3, 'create_list_objects_paginator', return_value=iter(mock_pages)):
+            result = list(s3.stream_paginator_pages(TEST_BUCKET_NAME))
+
+        assert result == mock_pages
+
+    def test_stream_keys_in_dir(self, s3):
+        mock_pages = [
+            {'Contents': [{'Key': 'key1'}, {'Key': 'key2'}]},
+            {'Contents': [{'Key': 'key3'}, {'Key': 'key4'}]}
+        ]
+        with patch.object(s3, 'create_list_objects_paginator', return_value=iter(mock_pages)):
+            result = list(s3.stream_keys_in_dir(TEST_BUCKET_NAME))
+
+        assert result == ['key1', 'key2', 'key3', 'key4']
+
+    def make_data_of_size(self, size_bytes):
+        """Helper to generate enough key-value pairs to exceed a given byte size."""
+        data = []
+        current_size = 0
+        i = 0
+        while current_size < size_bytes:
+            pair = (f"key{i}", f"value{i}")
+            line = json.dumps({pair[0]: [pair[1]]}).encode('utf-8') + b'\n'
+            current_size += len(line)
+            data.append(pair)
+            i += 1
+        return data
+
+    def test_upload_sorted_data_in_chunks_single_chunk(self, s3, mock_conn):
+        mock_conn.create_multipart_upload.return_value = {'UploadId': TEST_UPLOAD_ID}
+        mock_conn.upload_part.return_value = {'ETag': 'test-etag1'}
+
+        data = [('apple', 1), ('apple', 2), ('banana', 3)]
+        s3.upload_sorted_data_in_chunks(TEST_BUCKET_NAME, TEST_KEY_NAME, data)
+
+        assert mock_conn.upload_part.call_count == 1
+        mock_conn.upload_part.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME,
+            UploadId=TEST_UPLOAD_ID,
+            PartNumber=1,
+            Body=(json.dumps({'apple': [1, 2]}) + '\n' + json.dumps({'banana': [3]}) + '\n').encode()
+        )
+        mock_conn.complete_multipart_upload.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME,
+            UploadId=TEST_UPLOAD_ID,
+            MultipartUpload={'Parts': [{'PartNumber': 1, 'ETag': 'test-etag1'}]}
+        )
+
+    def test_upload_sorted_data_in_chunks_multiple_chunks(self, s3, mock_conn):
+        mock_conn.create_multipart_upload.return_value = {'UploadId': TEST_UPLOAD_ID}
+        mock_conn.upload_part.side_effect = [
+            {'ETag': 'test-etag1'},
+            {'ETag': 'test-etag2'}
+        ]
+        data = self.make_data_of_size(6 * (1024**2)) # 6MBs of mock data
+
+        s3.upload_sorted_data_in_chunks(TEST_BUCKET_NAME, TEST_KEY_NAME, data)
+
+        assert mock_conn.upload_part.call_count == 2
+        mock_conn.complete_multipart_upload.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME,
+            UploadId=TEST_UPLOAD_ID,
+            MultipartUpload={
+                'Parts': [
+                    {'PartNumber': 1, 'ETag': 'test-etag1'},
+                    {'PartNumber': 2, 'ETag': 'test-etag2'}
+                ]
+            }
+        )

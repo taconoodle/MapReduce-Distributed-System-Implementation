@@ -165,43 +165,63 @@ class S3Storage:
             )
             return response
 
-    def create_paginator(self, bucket, prefix=''):
-        paginator = self.conn.get_paginator('list_objects_v2')
-        paginator_parameters = {
-            'Bucket': bucket,
-            'Prefix': prefix,
-            'Delimiter': '/'
-        }
-        page_iterator = paginator.paginate(**paginator_parameters)
-        return page_iterator
+    def create_list_objects_paginator(self, bucket, prefix=''):
+        with self._handle_errors():
+            paginator = self.conn.get_paginator('list_objects_v2')
+            paginator_parameters = {
+                'Bucket': bucket,
+                'Prefix': prefix,
+                'Delimiter': '/'
+            }
+            page_iterator = paginator.paginate(**paginator_parameters)
+            return page_iterator
 
     def stream_paginator_pages(self, bucket, prefix=''):
-        paginator = self.create_paginator(bucket, prefix)
-        for page in paginator:
-            yield page
+        with self._handle_errors():
+            page_iterator = self.create_list_objects_paginator(bucket, prefix)
+            for page in page_iterator:
+                yield page
 
-    def stream_keys_in_dir(self, bucket, prefix):
-        for page in self.stream_paginator_pages(bucket, prefix):
-            for contents in page['Contents']:
-                yield contents['Key']
+    def stream_keys_in_dir(self, bucket, prefix=''):
+        with self._handle_errors():
+            for page in self.stream_paginator_pages(bucket, prefix):
+                for contents in page['Contents']:
+                    yield contents['Key']
 
     def upload_sorted_data_in_chunks(self, bucket, key, data):
-        mpu = self.conn.create_multipart_upload(
-            Bucket=bucket,
-            Key=key
-        )
-        upload_id = mpu['UploadId']
-        parts = []
-        part_number = 1
-        buffer = []
-        buffer_size = 0
-        for key, group in groupby(data, key=lambda pair: pair[0]):
-            values = [value for _, value in group]
-            line = json.dumps({key: values}) + '\n'
-            line = line.encode('utf-8')
-            buffer_size += len(line)
+        with self._handle_errors():
+            mpu = self.conn.create_multipart_upload(
+                Bucket=bucket,
+                Key=key
+            )
+            upload_id = mpu['UploadId']
+            parts = []
+            part_number = 1
+            buffer = []
+            buffer_size = 0
+            for group_key, group in groupby(data, key=lambda pair: pair[0]):
+                values = [value for _, value in group]
+                line = json.dumps({group_key: values}) + '\n'
+                line = line.encode('utf-8')
+                buffer_size += len(line)
+                buffer.append(line)
 
-            if buffer_size >= (5 * (1024 ** 2)):
+                if buffer_size >= (5 * (1024 ** 2) + 1024):
+                    chunk = b''.join(buffer)
+                    response = self.conn.upload_part(
+                        Bucket=bucket,
+                        Key=key,
+                        UploadId=upload_id,
+                        PartNumber=part_number,
+                        Body=chunk
+                    )
+                    parts.append({'PartNumber': part_number, 'ETag': response['ETag']})
+                    part_number += 1
+                    buffer = []
+                    buffer_size = 0
+
+            # Handle last chunk
+            if buffer:
                 chunk = b''.join(buffer)
                 response = self.conn.upload_part(
                     Bucket=bucket,
@@ -211,25 +231,10 @@ class S3Storage:
                     Body=chunk
                 )
                 parts.append({'PartNumber': part_number, 'ETag': response['ETag']})
-                part_number += 1
-                buffer = []
-                buffer_size = 0
 
-        # Handle last chunk
-        if buffer:
-            chunk = b''.join(buffer)
-            response = self.conn.upload_part(
+            self.conn.complete_multipart_upload(
                 Bucket=bucket,
                 Key=key,
                 UploadId=upload_id,
-                PartNumber=part_number,
-                Body=chunk
+                MultipartUpload={'Parts': parts}
             )
-            parts.append({'PartNumber': part_number, 'ETag': response['ETag']})
-
-        self.conn.complete_multipart_upload(
-            Bucket=bucket,
-            Key=key,
-            UploadId=upload_id,
-            MultipartUpload={'Parts': parts}
-        )
