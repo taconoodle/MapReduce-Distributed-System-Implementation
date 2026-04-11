@@ -1,6 +1,7 @@
 from Manager.storage import S3Storage, S3ConnectionError
 
 import pytest
+import json
 from unittest.mock import patch, MagicMock, ANY
 from botocore.exceptions import *
 
@@ -493,3 +494,102 @@ class TestS3Storage:
             )
         assert 'Invalid part number. Part number must be between 1 and 10000' in str(except_info.value)
 
+    def test_stream_file_pairs_success(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+        mock_body.iter_lines.return_value = [
+            b'{"key1": "value1", "key2": "value2"}',
+            b'{"key3": "value3", "key4": "value4", "key5": "value5"}',
+        ]
+
+        result = list(s3.stream_file_pairs(TEST_BUCKET_NAME, TEST_KEY_NAME))
+        mock_conn.get_object.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME
+        )
+        assert result == [
+            ('key1', 'value1'),
+            ('key2', 'value2'),
+            ('key3', 'value3'),
+            ('key4', 'value4'),
+            ('key5', 'value5')
+        ]
+
+    def test_stream_file_pairs_empty_file(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+        mock_body.iter_lines.return_value = []
+
+        result = list(s3.stream_file_pairs(TEST_BUCKET_NAME, TEST_KEY_NAME))
+        assert result == []
+
+    def test_stream_file_pairs_invalid_file(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+
+        mock_body.iter_lines.return_value = [b'banana-with-pajama']
+        with pytest.raises(S3ConnectionError) as except_info:
+            list(s3.stream_file_pairs(TEST_BUCKET_NAME, TEST_KEY_NAME))
+        assert 'Invalid line found in JSON' in str(except_info.value)
+
+        mock_body.iter_lines.return_value = [b'67']
+        with pytest.raises(S3ConnectionError) as except_info:
+            list(s3.stream_file_pairs(TEST_BUCKET_NAME, TEST_KEY_NAME))
+        assert 'Invalid line found in JSON' in str(except_info.value)
+
+    def test_get_json_body_success(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_body.read.return_value = b'{"key1": "value1", "key2": "value2"}'
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+
+        result = s3.get_json_body(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        mock_conn.get_object.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME
+        )
+        assert result == {'key1': 'value1', 'key2': 'value2'}
+
+    def test_get_json_body_invalid_json(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_body.read.return_value = b''
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.get_json_body(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        assert 'Invalid line found in JSON' in str(except_info.value)
+
+    def test_sort_json_success(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_body.read.return_value = b'{"2": "value1", "0": "value2", "1": "value3"}'
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+        mock_conn.put_object.return_value = {
+            'ETag': 'test-etag'
+        }
+
+        result = s3.sort_json(
+            'test-src-bucket',
+            'test-src-key',
+            'test-dst-bucket',
+            'test-dst-key'
+        )
+
+        call_kwargs = mock_conn.put_object.call_args.kwargs
+        assert json.loads(call_kwargs['Body']) == {"0": "value2", "1": "value3", "2": "value1"}
+        assert result == {'ETag': 'test-etag'}
+        mock_conn.put_object.assert_called_once_with(
+            Bucket='test-dst-bucket',
+            Key='test-dst-key',
+            Body=json.dumps({"0": "value2", "1": "value3", "2": "value1"})
+        )

@@ -22,8 +22,12 @@ class S3Storage:
     def _handle_errors(self):
         try:
             yield
-        except EndpointConnectionError as e:
+        except EndpointConnectionError:
             raise S3ConnectionError('Could not reach S3 endpoint')
+        except json.JSONDecodeError:
+            raise S3ConnectionError('Invalid line found in JSON')
+        except S3ConnectionError as e:
+            raise e
         except ClientError as e:
             code = e.response['Error']['Code']
             match code:
@@ -123,33 +127,43 @@ class S3Storage:
             return response
 
     def stream_file_pairs(self, bucket, key):
-        response = self.conn.get_object(
-            Bucket=bucket,
-            Key=key
-        )
-        for line in response['Body'].iter_lines():
-            pairs = json.loads(line)
-            for key, value in pairs.items():
-                yield key, value
-
+        '''
+        Works with JSONL files of the format:
+        {"key1": "value1", "key2": "value2"}
+        {"key3": "value3", "key4": "value4"}
+        etc...
+        '''
+        with self._handle_errors():
+            response = self.conn.get_object(
+                Bucket=bucket,
+                Key=key
+            )
+            for line in response['Body'].iter_lines():
+                pairs = json.loads(line)
+                if not isinstance(pairs, dict):
+                    raise S3ConnectionError('Invalid line found in JSON')
+                for key, value in pairs.items():
+                    yield key, value
 
     def get_json_body(self, bucket, key):
-        body = self.conn.get_object(
-            Bucket=bucket,
-            Key=key
-        )['Body']
-        return json.load(body)
+        with self._handle_errors():
+            body = self.conn.get_object(
+                Bucket=bucket,
+                Key=key
+            )['Body']
+            return json.load(body)
 
     def sort_json(self, src_bucket, src_key, dst_bucket, dst_key):
-        data = self.get_json_body(src_bucket, src_key)
+        with self._handle_errors():
+            data = self.get_json_body(src_bucket, src_key)
 
-        data = dict(sorted(data.items(), key=lambda item: item[0]))
-        self.conn.put_object (
-            Bucket=dst_bucket,
-            Key=dst_key,
-            Body=json.dumps(data)
-        )
-
+            data = dict(sorted(data.items(), key=lambda item: item[0]))
+            response = self.conn.put_object (
+                Bucket=dst_bucket,
+                Key=dst_key,
+                Body=json.dumps(data)
+            )
+            return response
 
     def create_paginator(self, bucket, prefix=''):
         paginator = self.conn.get_paginator('list_objects_v2')
