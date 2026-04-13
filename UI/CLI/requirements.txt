@@ -1,0 +1,4 @@
+typer
+httpx
+python-jose
+rich

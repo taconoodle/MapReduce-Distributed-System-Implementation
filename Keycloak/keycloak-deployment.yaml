@@ -15,16 +15,17 @@ spec:
       containers:
       - name: keycloak
         image: keycloak/keycloak:latest
-        args: [ "start-dev" ]
+        # remove "--db=dev-mem" and add postegras for real deployment
+        args: [ "start-dev", "--db=dev-mem"] 
         env:
-        - name: KC_DB
-          value: "postgres"
-        - name: KC_DB_URL
-          value: "jdbc:postgresql://postgres-service:5432/distributed_db?currentSchema=keycloak"
-        - name: KC_DB_USERNAME
-          value: "admin"
-        - name: KC_DB_PASSWORD
-          value: "admin"
+        #- name: KC_DB
+        #  value: "postgres"
+        #- name: KC_DB_URL
+        #  value: "jdbc:postgresql://postgres-service:5432/distributed_db?currentSchema=keycloak"
+        #- name: KC_DB_USERNAME
+        #  value: "admin"
+        #- name: KC_DB_PASSWORD
+        #  value: "admin"
         - name: KEYCLOAK_ADMIN
           value: "admin"
         - name: KEYCLOAK_ADMIN_PASSWORD
