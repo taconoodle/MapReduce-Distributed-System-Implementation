@@ -18,12 +18,11 @@ MOCK_DATA_DICT = {
             'c': {'apple': 1}
             }
 
+@pytest.fixture
+def mock_s3():
+    return MagicMock()
+
 class TestMapWorker:
-
-    @pytest.fixture
-    def mock_s3(self):
-        return MagicMock()
-
     @pytest.fixture
     def map_worker(self, mock_s3):
         with patch('Jobs.worker.S3Storage', return_value=mock_s3):
@@ -69,7 +68,7 @@ class TestMapWorker:
             assert key in result[shuffler_id]
             assert result[shuffler_id][key] == [1]
 
-    def test_run_calls_correct_sequence(self, map_worker, mock_s3):
+    def test_run_success(self, map_worker, mock_s3):
         mock_data = {"a": 1, "b": 2}
         mock_map_results = {0: {"a": [1]}, 1: {"b": [2]}}
         expected_calls = [
@@ -90,5 +89,47 @@ class TestMapWorker:
         mock_get_chunk.assert_called_once()
         mock_get_map_results.assert_called_once_with(mock_data)
         mock_s3.upload_to_bucket.assert_has_calls(expected_calls)
+        mock_s3.close.assert_called_once()
+        mock_exit.assert_called_once_with(0)
+
+class TestShuffleWorker:
+    @pytest.fixture
+    def shuffle_worker(self, mock_s3):
+        with patch('Jobs.worker.S3Storage', return_value=mock_s3):
+            yield ShuffleWorker()
+
+    def test_run_success(self, mock_s3, shuffle_worker):
+        common_key_prefix = f'jobs/{shuffle_worker.job_id}/intermediate_files'
+        input_data_prefix = common_key_prefix + f'/mapper_outputs/shuffler_{shuffle_worker.worker_id}'
+        temp_output_prefix = common_key_prefix + f'/shuffler_outputs/temp/shuffler_{shuffle_worker.worker_id}'
+        output_key = common_key_prefix + f'/shuffler_outputs/reducer_{shuffle_worker.worker_id}/shuffler_{shuffle_worker.worker_id}.json'
+        mock_input_keys = [
+            f'{input_data_prefix}/mapper_1.json',
+            f'{input_data_prefix}/mapper_2.json',
+        ]
+        mock_sorted_keys = [
+            f'{temp_output_prefix}/mapper_1.json',
+            f'{temp_output_prefix}/mapper_2.json',
+        ]
+
+        mock_s3.stream_keys_in_dir.side_effect = [
+            iter(mock_input_keys),
+            iter(mock_sorted_keys)
+        ]
+        mock_s3.stream_file_pairs.return_value = iter([])
+
+        with patch('builtins.exit') as mock_exit:
+            shuffle_worker.run()
+
+        mock_s3.init_s3.assert_called_once()
+        mock_s3.sort_json.assert_has_calls([
+            call('rustfs', mock_input_keys[0], 'rustfs', mock_sorted_keys[0]),
+            call('rustfs', mock_input_keys[1], 'rustfs', mock_sorted_keys[1])
+        ])
+        mock_s3.upload_sorted_data_in_chunks.assert_called_once_with(
+            'rustfs',
+            output_key,
+            ANY
+        )
         mock_s3.close.assert_called_once()
         mock_exit.assert_called_once_with(0)
