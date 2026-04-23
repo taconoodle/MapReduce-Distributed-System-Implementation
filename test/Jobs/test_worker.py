@@ -40,8 +40,8 @@ class TestMapWorker:
         serialized_map = base64.b64encode(cloudpickle.dumps(map_worker.map_fn)).decode()
         with patch.dict(os.environ, {"SERIALIZED_MAP": serialized_map}):
             map_fn = map_worker.load_map_fn()
+            result = list(map_fn(MOCK_DATA_DICT))
 
-        result = list(map_fn(MOCK_DATA_DICT))
         assert result == [
             ('a', 1),
             ('b', 1),
@@ -130,6 +130,69 @@ class TestShuffleWorker:
             'rustfs',
             output_key,
             ANY
+        )
+        mock_s3.close.assert_called_once()
+        mock_exit.assert_called_once_with(0)
+
+class TestReduceWorker:
+    @pytest.fixture
+    def reduce_worker(self, mock_s3):
+        with patch('Jobs.worker.S3Storage', return_value=mock_s3):
+            yield ReduceWorker()
+
+    def test_load_reduce_fn_success(self, mock_s3, reduce_worker):
+        sample_data = [
+            ('a', [1, 2, 3]),
+            ('b', [1, 1, 1]),
+            ('c', [1, 2]),
+        ]
+        serialized_reduce = base64.b64encode(cloudpickle.dumps(reduce_worker.reduce_fn)).decode()
+        with patch.dict(os.environ, {"SERIALIZED_REDUCE": serialized_reduce}):
+            reduce_fn = reduce_worker.load_reduce_fn()
+            result = list(reduce_fn(key, values) for key, values in sample_data)
+
+        assert result == [
+            ('a', 6),
+            ('b', 3),
+            ('c', 3)
+        ]
+
+    def test_reduce_lines_success(self, mock_s3, reduce_worker):
+        sample_data = [
+            ('a', 1), ('a', 2), ('a', 3),
+            ('b', 1), ('b', [1, 1]),
+            ('c', 1), ('c', 2)
+        ]
+        result = list(reduce_worker.reduce_lines(sample_data))
+
+        assert result == [
+            ('a', 6),
+            ('b', 3),
+            ('c', 3)
+        ]
+
+    def test_run_success(self, mock_s3, reduce_worker):
+        common_key_prefix = f'jobs/{reduce_worker.job_id}'
+        input_data_prefix = common_key_prefix + f'/intermediate_files/shuffler_outputs/reducer_{reduce_worker.worker_id}/shuffler_{reduce_worker.worker_id}.json'
+        output_prefix = common_key_prefix + f'/output_files/job_{reduce_worker.job_id}.json'
+        mock_pairs = iter([('a', 1), ('a', 2), ('b', 1)])
+        mock_reduced_lines = iter([('a', 1), ('b', 1)])
+
+        mock_s3.stream_file_pairs.return_value = mock_pairs
+        with patch.object(reduce_worker, 'reduce_lines', return_value=mock_reduced_lines) as mock_reduce_lines, \
+                patch('builtins.exit') as mock_exit:
+            reduce_worker.run()
+
+        mock_s3.init_s3.assert_called_once()
+        mock_s3.stream_file_pairs.assert_called_once_with(
+            'rustfs',
+            input_data_prefix
+        )
+        mock_reduce_lines.assert_called_once_with(mock_pairs)
+        mock_s3.upload_sorted_data_in_chunks.assert_called_once_with(
+            'rustfs',
+            output_prefix,
+            mock_reduced_lines
         )
         mock_s3.close.assert_called_once()
         mock_exit.assert_called_once_with(0)

@@ -77,8 +77,11 @@ class MapWorker:
     
 class ShuffleWorker:
     def __init__(self):
-        self.job_id = None
-        self.worker_id = None
+        # self.job_id = os.getenv("JOB_ID")
+        # self.worker_id = os.getenv("WORKER_ID")
+        self.job_id = 1
+        self.worker_id = 1
+
         self.data_bucket = 'rustfs'
         self.s3 = S3Storage()
         return
@@ -112,36 +115,49 @@ class ShuffleWorker:
     
 class ReduceWorker:
     def __init__(self):
-        self.job_id = None
-        self.worker_id = None
-        self.reduce_fn = None
+        # self.job_id = os.getenv("JOB_ID")
+        # self.worker_id = os.getenv("WORKER_ID")
+        # self.reduce_fn = self.load_reduce_fn()
+        self.job_id = 1
+        self.worker_id = 1
+
         self.data_bucket = 'rustfs'
         self.s3 = S3Storage()
 
+    def load_reduce_fn(self):
+        serialized_reduce_fn = os.getenv("SERIALIZED_REDUCE")
+        return cloudpickle.loads(base64.b64decode(serialized_reduce_fn))
+
+    def reduce_fn(self, key, values):
+        return key, sum(values)
 
     def reduce_lines(self, data):
         previous_key = None
         values_buffer = []
-        for key, values in data:
+        for (key, values) in data:
             if key != previous_key and previous_key is not None:
-                result_key, result_value = self.reduce_fn((previous_key, values_buffer))
+                result_key, result_value = self.reduce_fn(previous_key, values_buffer)
 
                 values_buffer.clear()
                 previous_key = key
                 yield result_key, result_value
 
-            values_buffer.extend(values)
+            previous_key = key
+            if isinstance(values, list):
+                values_buffer.extend(values)
+            else:
+                values_buffer.append(values)
 
         # Handle last key
         if previous_key is not None:
-            result_key, result_value = self.reduce_fn((previous_key, values_buffer))
+            result_key, result_value = self.reduce_fn(previous_key, values_buffer)
             yield result_key, result_value
 
     def run(self):
         self.s3.init_s3()
         common_key_prefix = f'jobs/{self.job_id}'
-        input_data_prefix = common_key_prefix + f'intermediate_files/shuffler_outputs/reducer_{self.worker_id}/shuffler_{self.worker_id}.json'
-        output_prefix = common_key_prefix + f'output_files/job_{self.job_id}.json'
+        input_data_prefix = common_key_prefix + f'/intermediate_files/shuffler_outputs/reducer_{self.worker_id}/shuffler_{self.worker_id}.json'
+        output_prefix = common_key_prefix + f'/output_files/job_{self.job_id}.json'
 
         input_lines = self.s3.stream_file_pairs(self.data_bucket, input_data_prefix)
         reducer = self.reduce_lines(input_lines)
