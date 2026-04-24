@@ -1,0 +1,700 @@
+from Manager.storage import S3Storage, S3ConnectionError
+
+import pytest
+import json
+from unittest.mock import patch, MagicMock, ANY
+from botocore.exceptions import *
+
+TEST_BUCKET_NAME = 'test-bucket'
+TEST_KEY_NAME = 'test-key'
+TEST_FILE_NAME = 'test-file'
+TEST_BODY = 'test-body'
+TEST_ENDPOINT_URL = 'http://test-url:9000'
+TEST_USERNAME = 'admin'
+TEST_PASSWORD = 'admin'
+TEST_UPLOAD_ID = 'test-upload-id'
+TEST_BYTE_AMOUNT_MB = 100
+TEST_BYTE_OFFSET = 10
+
+class TestS3Storage:
+
+    @patch('Manager.storage.RUSTFS_URL', TEST_ENDPOINT_URL)
+    @patch('Manager.storage.RUSTFS_USERNAME', TEST_USERNAME)
+    @patch('Manager.storage.RUSTFS_PASSWORD', TEST_PASSWORD)
+    @patch('Manager.storage.boto3.client')
+    def test_init_s3_calls_boto3_with_correct_args(self, mock_boto_client):
+        mock_conn = MagicMock()
+        mock_boto_client.return_value = mock_conn
+
+        s3 = S3Storage()
+        assert s3.conn is None # No conn should exist in creation
+
+        result = s3.init_s3()
+
+        mock_boto_client.assert_called_once_with(
+            's3',
+            endpoint_url=TEST_ENDPOINT_URL,
+            aws_access_key_id=TEST_USERNAME,
+            aws_secret_access_key=TEST_PASSWORD,
+            config=ANY,
+            region_name='us-east-1'
+        )
+
+        assert s3.conn == mock_conn
+        assert result is mock_conn
+
+    @patch('Manager.storage.boto3.client')
+    def test_init_s3_raises_on_invalid_username(self, mock_boto_client):
+        mock_boto_client.side_effect = ClientError(
+            error_response={'Error': {'Code': 'InvalidAccessKeyId'}},
+            operation_name='TestCreateConn'
+        )
+
+        s3 = S3Storage()
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.init_s3()
+
+        assert "Invalid username" in str(except_info.value)
+
+    @patch('Manager.storage.boto3.client')
+    def test_init_s3_raises_on_invalid_password(self, mock_boto_client):
+        mock_boto_client.side_effect = ClientError(
+            error_response={'Error': {'Code': 'SignatureDoesNotMatch'}},
+            operation_name='TestCreateConn'
+        )
+
+        s3 = S3Storage()
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.init_s3()
+
+        assert "Invalid password" in str(except_info.value)
+
+    @patch('Manager.storage.boto3.client')
+    def test_init_s3_raises_on_invalid_endpoint_url(self, mock_boto_client):
+        mock_boto_client.side_effect = EndpointConnectionError(
+            endpoint_url=TEST_ENDPOINT_URL
+        )
+
+        s3 = S3Storage()
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.init_s3()
+
+        assert "Could not reach S3 endpoint" in str(except_info.value)
+
+    @patch('Manager.storage.boto3.client')
+    def test_init_s3_raises_unknown_error(self, mock_boto_client):
+        mock_boto_client.side_effect = ClientError(
+            error_response={'Error': {'Code': 'UnknownError'}},
+            operation_name='TestCreateConn'
+        )
+
+        s3 = S3Storage()
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.init_s3()
+
+        assert "Unknown error" in str(except_info.value)
+
+    @pytest.fixture
+    def mock_conn(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def s3(self, mock_conn):
+        with patch('Manager.storage.boto3.client') as mock_boto:
+            mock_boto.return_value = mock_conn
+            s3 = S3Storage()
+            s3.init_s3()
+            yield s3
+
+    def test_create_bucket_success(self, s3, mock_conn):
+        mock_conn.create_bucket.return_value = {
+            'Location': f'/{TEST_BUCKET_NAME}'
+        }
+        result = s3.create_bucket(TEST_BUCKET_NAME)
+
+        mock_conn.create_bucket.assert_called_once_with(Bucket=TEST_BUCKET_NAME)
+        assert result['Location'] == f'/{TEST_BUCKET_NAME}'
+
+    def test_create_bucket_already_exists(self, s3, mock_conn):
+        mock_conn.create_bucket.side_effect = ClientError(
+            error_response={'Error': {'Code': 'BucketAlreadyExists'}},
+            operation_name='TestBucketCreate'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.create_bucket(TEST_BUCKET_NAME)
+        assert 'Bucket already exists' in str(except_info.value)
+
+    def test_create_bucket_invalid_name(self, s3, mock_conn):
+        mock_conn.create_bucket.side_effect = ClientError(
+            error_response={'Error': {'Code': 'InvalidBucketName'}},
+            operation_name='TestBucketCreate'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.create_bucket(TEST_BUCKET_NAME)
+        assert 'Invalid bucket name' in str(except_info.value)
+
+    def test_create_bucket_when_too_many_exist(self, s3, mock_conn):
+        mock_conn.create_bucket.side_effect = ClientError(
+            error_response={'Error': {'Code': 'TooManyBuckets'}},
+            operation_name='TestBucketCreate'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.create_bucket(TEST_BUCKET_NAME)
+        assert 'Too many buckets' in str(except_info.value)
+
+    def test_create_bucket_raises_unknown_error(self, s3, mock_conn):
+        mock_conn.create_bucket.side_effect = ClientError(
+            error_response={'Error': {'Code': 'UnknownError'}},
+            operation_name='TestBucketCreate'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.create_bucket(TEST_BUCKET_NAME)
+        assert 'Unknown error' in str(except_info.value)
+
+    def test_create_object_success(self, s3, mock_conn):
+        mock_conn.put_object.return_value = {
+            'ETag': 'fake-etag'
+        }
+        result = s3.create_object(TEST_BUCKET_NAME, TEST_KEY_NAME, TEST_BODY)
+
+        mock_conn.put_object.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME,
+            Body=TEST_BODY
+        )
+        assert result['ETag'] == 'fake-etag'
+
+    def test_create_object_bucket_does_not_exist(self, s3, mock_conn):
+        mock_conn.put_object.side_effect = ClientError(
+            error_response={'Error': {'Code': 'NoSuchBucket'}},
+            operation_name='TestCreateObject'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.create_object(TEST_BUCKET_NAME, TEST_KEY_NAME, TEST_BODY)
+        assert 'Bucket does not exist' in str(except_info.value)
+
+    def test_create_object_invalid_bucket_name(self, s3, mock_conn):
+        mock_conn.put_object.side_effect = ClientError(
+            error_response={'Error': {'Code': 'InvalidBucketName'}},
+            operation_name='TestCreateObject'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.create_object(TEST_BUCKET_NAME, TEST_KEY_NAME, TEST_BODY)
+        assert 'Invalid bucket name' in str(except_info.value)
+
+    def test_create_object_endpoint_failure(self, s3, mock_conn):
+        mock_conn.put_object.side_effect = EndpointConnectionError(
+            endpoint_url='http://test-url:9000'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.create_object(TEST_BUCKET_NAME, TEST_KEY_NAME, TEST_BODY)
+        assert 'Could not reach S3 endpoint' in str(except_info.value)
+
+    def test_create_object_unknown_error(self, s3, mock_conn):
+        mock_conn.put_object.side_effect = ClientError(
+            error_response={'Error': {'Code': 'UnknownError'}},
+            operation_name='TestCreateObject'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.create_object(TEST_BUCKET_NAME, TEST_KEY_NAME, TEST_BODY)
+        assert 'Unknown error' in str(except_info.value)
+
+    def test_upload_to_bucket_success(self, s3, mock_conn):
+        s3.upload_to_bucket(TEST_BUCKET_NAME, TEST_FILE_NAME, TEST_KEY_NAME)
+
+        mock_conn.upload_file.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME,
+            Filename=TEST_FILE_NAME
+        )
+
+    def test_upload_to_bucket_with_no_keyname(self, s3, mock_conn):
+        s3.upload_to_bucket(TEST_BUCKET_NAME, TEST_FILE_NAME)
+
+        mock_conn.upload_file.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_FILE_NAME,
+            Filename=TEST_FILE_NAME
+        )
+
+    def test_upload_to_bucket_does_not_exist(self, s3, mock_conn):
+        mock_conn.upload_file.side_effect = ClientError(
+            error_response={'Error': {'Code': 'NoSuchBucket'}},
+            operation_name='TestUploadToBucket'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.upload_to_bucket(TEST_BUCKET_NAME, TEST_FILE_NAME, TEST_KEY_NAME)
+        assert 'Bucket does not exist' in str(except_info.value)
+
+    def test_upload_to_bucket_invalid_bucket_name(self, s3, mock_conn):
+        mock_conn.upload_file.side_effect = ClientError(
+            error_response={'Error': {'Code': 'InvalidBucketName'}},
+            operation_name='TestUploadToBucket'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.upload_to_bucket(TEST_BUCKET_NAME, TEST_FILE_NAME, TEST_KEY_NAME)
+        assert 'Invalid bucket name' in str(except_info.value)
+
+    def test_upload_to_bucket_endpoint_failure(self, s3, mock_conn):
+        mock_conn.upload_file.side_effect = EndpointConnectionError(
+            endpoint_url='http://test-url:9000'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.upload_to_bucket(TEST_BUCKET_NAME, TEST_FILE_NAME, TEST_KEY_NAME)
+        assert 'Could not reach S3 endpoint' in str(except_info.value)
+
+    def test_upload_to_bucket_unknown_error(self, s3, mock_conn):
+        mock_conn.upload_file.side_effect = ClientError(
+            error_response={'Error': {'Code': 'UnknownError'}},
+            operation_name='TestUploadToBucket'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.upload_to_bucket(TEST_BUCKET_NAME, TEST_FILE_NAME, TEST_KEY_NAME)
+        assert 'Unknown error' in str(except_info.value)
+
+    def test_download_from_bucket_success(self, s3, mock_conn):
+        s3.download_from_bucket(TEST_BUCKET_NAME, TEST_KEY_NAME, TEST_FILE_NAME)
+
+        mock_conn.download_file.assert_called_once_with(
+            Key=TEST_KEY_NAME,
+            Bucket=TEST_BUCKET_NAME,
+            Filename=TEST_FILE_NAME
+        )
+
+    def test_download_from_bucket_with_no_filename(self, s3, mock_conn):
+        s3.download_from_bucket(TEST_BUCKET_NAME, TEST_KEY_NAME)
+
+        mock_conn.download_file.assert_called_once_with(
+            Key=TEST_KEY_NAME,
+            Bucket=TEST_BUCKET_NAME,
+            Filename=TEST_KEY_NAME
+        )
+
+    def test_download_from_bucket_bucket_does_not_exist(self, s3, mock_conn):
+        mock_conn.download_file.side_effect = ClientError(
+            error_response={'Error': {'Code': 'NoSuchBucket'}},
+            operation_name='TestDownloadFromBucket'
+        )
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.download_from_bucket(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        assert 'Bucket does not exist' in str(except_info.value)
+
+    def test_download_from_bucket_key_does_not_exist(self, s3, mock_conn):
+        mock_conn.download_file.side_effect = ClientError(
+            error_response={'Error': {'Code': 'NoSuchKey'}},
+            operation_name='TestDownloadFromBucket'
+        )
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.download_from_bucket(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        assert 'Key does not exist' in str(except_info.value)
+
+    def test_download_from_bucket_invalid_bucket_name(self, s3, mock_conn):
+        mock_conn.download_file.side_effect = ClientError(
+            error_response={'Error': {'Code': 'InvalidBucketName'}},
+            operation_name='TestDownloadFromBucket'
+        )
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.download_from_bucket(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        assert 'Invalid bucket name' in str(except_info.value)
+
+    def test_download_from_bucket_endpoint_failure(self, s3, mock_conn):
+        mock_conn.download_file.side_effect = EndpointConnectionError(
+            endpoint_url=TEST_ENDPOINT_URL
+        )
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.download_from_bucket(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        assert 'Could not reach S3 endpoint' in str(except_info.value)
+
+    def test_download_from_bucket_unknown_error(self, s3, mock_conn):
+        mock_conn.download_file.side_effect = ClientError(
+            error_response={'Error': {'Code': 'UnknownError'}},
+            operation_name='TestDownloadFromBucket'
+        )
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.download_from_bucket(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        assert 'Unknown error' in str(except_info.value)
+
+    # I'LL STOP WRITING TESTS FOR EVERYTHING FROM NOW ON, OUR HANDLER WORKS
+    # I'LL WRITE HAPPY PATH AND MORE SPECIFIC TESTS
+
+    def test_delete_from_bucket_success(self, s3, mock_conn):
+        mock_conn.delete_object.return_value = {'ResponseMetadata': {}}
+        result = s3.delete_from_bucket(TEST_BUCKET_NAME, TEST_KEY_NAME)
+
+        mock_conn.delete_object.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME
+        )
+        assert result is not None
+
+    def test_close_success(self, s3, mock_conn):
+        s3.close()
+        s3.conn = None
+        s3.close()
+
+    def test_copy_file_part_success(self, s3, mock_conn):
+        mock_conn.head_object.return_value = {'ContentLength': 200 * (1024 ** 2)}
+        mock_conn.upload_part_copy.return_value = {
+            'CopyPartResult': {
+                'ETag': 'test-etag'
+            }
+        }
+        test_byte_range = f'bytes={TEST_BYTE_OFFSET}-{TEST_BYTE_AMOUNT_MB * (1024 ** 2) + TEST_BYTE_OFFSET - 1}'
+        result = s3.copy_file_part(
+            TEST_UPLOAD_ID,
+            'test-src-bucket',
+            'test-src-key',
+            'test-dst-bucket',
+            'test-dst-key',
+            TEST_BYTE_AMOUNT_MB,
+            TEST_BYTE_OFFSET,
+            2
+        )
+
+        mock_conn.upload_part_copy.assert_called_once_with(
+            UploadId=TEST_UPLOAD_ID,
+            Bucket='test-dst-bucket',
+            Key='test-dst-key',
+            PartNumber=2,
+            CopySource={'Bucket': 'test-src-bucket', 'Key': 'test-src-key'},
+            CopySourceRange=test_byte_range
+        )
+        assert result == {
+            'CopyPartResult': {
+                'ETag': 'test-etag'
+            }
+        }
+
+    def test_copy_file_part_without_optional_args(self, s3, mock_conn):
+        mock_conn.head_object.return_value = {'ContentLength': 200 * (1024 ** 2)}
+        mock_conn.upload_part_copy.return_value = {
+            'CopyPartResult': {
+                'ETag': 'test-etag'
+            }
+        }
+        test_byte_range = f'bytes={0}-{64 * (1024 ** 2) - 1}'
+        result = s3.copy_file_part(
+            TEST_UPLOAD_ID,
+            'test-src-bucket',
+            'test-src-key',
+            'test-dst-bucket',
+            'test-dst-key',
+        )
+
+        mock_conn.upload_part_copy.assert_called_once_with(
+            UploadId=TEST_UPLOAD_ID,
+            Bucket='test-dst-bucket',
+            Key='test-dst-key',
+            PartNumber=1,
+            CopySource={'Bucket': 'test-src-bucket', 'Key': 'test-src-key'},
+            CopySourceRange=test_byte_range
+        )
+        assert result == {
+            'CopyPartResult': {
+                'ETag': 'test-etag'
+            }
+        }
+
+    def test_copy_file_part_range_smaller_than_file(self, s3, mock_conn):
+        mock_conn.head_object.return_value = {'ContentLength': 10 * (1024 ** 2)}
+        mock_conn.upload_part_copy.return_value = {
+            'CopyPartResult': {
+                'ETag': 'test-etag'
+            }
+        }
+        test_byte_range = f'bytes={TEST_BYTE_OFFSET}-{10 * (1024 ** 2) - 1}'
+        result = s3.copy_file_part(
+            TEST_UPLOAD_ID,
+            'test-src-bucket',
+            'test-src-key',
+            'test-dst-bucket',
+            'test-dst-key',
+            TEST_BYTE_AMOUNT_MB,
+            TEST_BYTE_OFFSET,
+            2
+        )
+
+        mock_conn.upload_part_copy.assert_called_once_with(
+            UploadId=TEST_UPLOAD_ID,
+            Bucket='test-dst-bucket',
+            Key='test-dst-key',
+            PartNumber=2,
+            CopySource={'Bucket': 'test-src-bucket', 'Key': 'test-src-key'},
+            CopySourceRange=test_byte_range
+        )
+        assert result == {
+            'CopyPartResult': {
+                'ETag': 'test-etag'
+            }
+        }
+
+    def test_copy_file_part_invalid_args(self, s3, mock_conn):
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.copy_file_part(
+                TEST_UPLOAD_ID,
+                'test-src-bucket',
+                'test-src-key',
+                'test-dst-bucket',
+                'test-dst-key',
+                0,
+                TEST_BYTE_OFFSET,
+                2
+            )
+        assert 'Byte amount must be at least 0' in str(except_info.value)
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.copy_file_part(
+                TEST_UPLOAD_ID,
+                'test-src-bucket',
+                'test-src-key',
+                'test-dst-bucket',
+                'test-dst-key',
+                TEST_BYTE_AMOUNT_MB,
+                -1,
+                2
+            )
+        assert 'Byte offset must be greater than 0' in str(except_info.value)
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.copy_file_part(
+                TEST_UPLOAD_ID,
+                'test-src-bucket',
+                'test-src-key',
+                'test-dst-bucket',
+                'test-dst-key',
+                TEST_BYTE_AMOUNT_MB,
+                TEST_BYTE_OFFSET,
+                20000
+            )
+        assert 'Invalid part number. Part number must be between 1 and 10000' in str(except_info.value)
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.copy_file_part(
+                TEST_UPLOAD_ID,
+                'test-src-bucket',
+                'test-src-key',
+                'test-dst-bucket',
+                'test-dst-key',
+                TEST_BYTE_AMOUNT_MB,
+                TEST_BYTE_OFFSET,
+                -1
+            )
+        assert 'Invalid part number. Part number must be between 1 and 10000' in str(except_info.value)
+
+    def test_stream_file_pairs_success(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+        mock_body.iter_lines.return_value = [
+            b'{"key1": "value1", "key2": "value2"}',
+            b'{"key3": "value3", "key4": "value4", "key5": "value5"}',
+        ]
+
+        result = list(s3.stream_file_pairs(TEST_BUCKET_NAME, TEST_KEY_NAME))
+        mock_conn.get_object.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME
+        )
+        assert result == [
+            ('key1', 'value1'),
+            ('key2', 'value2'),
+            ('key3', 'value3'),
+            ('key4', 'value4'),
+            ('key5', 'value5')
+        ]
+
+    def test_stream_file_pairs_empty_file(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+        mock_body.iter_lines.return_value = []
+
+        result = list(s3.stream_file_pairs(TEST_BUCKET_NAME, TEST_KEY_NAME))
+        assert result == []
+
+    def test_stream_file_pairs_invalid_file(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+
+        mock_body.iter_lines.return_value = [b'banana-with-pajama']
+        with pytest.raises(S3ConnectionError) as except_info:
+            list(s3.stream_file_pairs(TEST_BUCKET_NAME, TEST_KEY_NAME))
+        assert 'Invalid line found in JSON' in str(except_info.value)
+
+        mock_body.iter_lines.return_value = [b'67']
+        with pytest.raises(S3ConnectionError) as except_info:
+            list(s3.stream_file_pairs(TEST_BUCKET_NAME, TEST_KEY_NAME))
+        assert 'Invalid line found in JSON' in str(except_info.value)
+
+    def test_get_json_body_success(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_body.read.return_value = b'{"key1": "value1", "key2": "value2"}'
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+
+        result = s3.get_json_body(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        mock_conn.get_object.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME
+        )
+        assert result == {'key1': 'value1', 'key2': 'value2'}
+
+    def test_get_json_body_invalid_json(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_body.read.return_value = b''
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+
+        with pytest.raises(S3ConnectionError) as except_info:
+            s3.get_json_body(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        assert 'Invalid line found in JSON' in str(except_info.value)
+
+    def test_sort_json_success(self, s3, mock_conn):
+        mock_body = MagicMock()
+        mock_body.read.return_value = b'{"2": "value1", "0": "value2", "1": "value3"}'
+        mock_conn.get_object.return_value = {
+            'Body': mock_body
+        }
+        mock_conn.put_object.return_value = {
+            'ETag': 'test-etag'
+        }
+
+        result = s3.sort_json(
+            'test-src-bucket',
+            'test-src-key',
+            'test-dst-bucket',
+            'test-dst-key'
+        )
+
+        call_kwargs = mock_conn.put_object.call_args.kwargs
+        assert json.loads(call_kwargs['Body']) == {"0": "value2", "1": "value3", "2": "value1"}
+        assert result == {'ETag': 'test-etag'}
+        mock_conn.put_object.assert_called_once_with(
+            Bucket='test-dst-bucket',
+            Key='test-dst-key',
+            Body=json.dumps({"0": "value2", "1": "value3", "2": "value1"})
+        )
+
+    def test_create_list_objects_paginator_success(self, s3, mock_conn):
+        mock_paginator = MagicMock()
+        mock_iterator = MagicMock()
+        mock_conn.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = mock_iterator
+
+        result = s3.create_list_objects_paginator(TEST_BUCKET_NAME, TEST_KEY_NAME)
+        mock_conn.get_paginator.assert_called_once_with('list_objects_v2')
+        mock_paginator.paginate.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Prefix=TEST_KEY_NAME,
+            Delimiter='/'
+        )
+        assert result == mock_iterator
+
+    def test_create_list_objects_paginator_default_args(self, s3, mock_conn):
+        mock_paginator = MagicMock()
+        mock_conn.get_paginator.return_value = mock_paginator
+
+        s3.create_list_objects_paginator(TEST_BUCKET_NAME)
+        mock_paginator.paginate.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Prefix="",
+            Delimiter='/'
+        )
+
+    def test_stream_paginator_pages(self, s3):
+        mock_pages = [
+            {'Contents': [{'Key': 'key1'}, {'Key': 'key2'}]},
+            {'Contents': [{'Key': 'key3'}, {'Key': 'key4'}]}
+        ]
+
+        with patch.object(s3, 'create_list_objects_paginator', return_value=iter(mock_pages)):
+            result = list(s3.stream_paginator_pages(TEST_BUCKET_NAME))
+
+        assert result == mock_pages
+
+    def test_stream_keys_in_dir(self, s3):
+        mock_pages = [
+            {'Contents': [{'Key': 'key1'}, {'Key': 'key2'}]},
+            {'Contents': [{'Key': 'key3'}, {'Key': 'key4'}]}
+        ]
+        with patch.object(s3, 'create_list_objects_paginator', return_value=iter(mock_pages)):
+            result = list(s3.stream_keys_in_dir(TEST_BUCKET_NAME))
+
+        assert result == ['key1', 'key2', 'key3', 'key4']
+
+    def make_data_of_size(self, size_bytes):
+        """Helper to generate enough key-value pairs to exceed a given byte size."""
+        data = []
+        current_size = 0
+        i = 0
+        while current_size < size_bytes:
+            pair = (f"key{i}", f"value{i}")
+            line = json.dumps({pair[0]: [pair[1]]}).encode('utf-8') + b'\n'
+            current_size += len(line)
+            data.append(pair)
+            i += 1
+        return data
+
+    def test_upload_sorted_data_in_chunks_single_chunk(self, s3, mock_conn):
+        mock_conn.create_multipart_upload.return_value = {'UploadId': TEST_UPLOAD_ID}
+        mock_conn.upload_part.return_value = {'ETag': 'test-etag1'}
+
+        data = [('apple', 1), ('apple', 2), ('banana', 3)]
+        s3.upload_sorted_data_in_chunks(TEST_BUCKET_NAME, TEST_KEY_NAME, data)
+
+        assert mock_conn.upload_part.call_count == 1
+        mock_conn.upload_part.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME,
+            UploadId=TEST_UPLOAD_ID,
+            PartNumber=1,
+            Body=(json.dumps({'apple': [1, 2]}) + '\n' + json.dumps({'banana': [3]}) + '\n').encode()
+        )
+        mock_conn.complete_multipart_upload.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME,
+            UploadId=TEST_UPLOAD_ID,
+            MultipartUpload={'Parts': [{'PartNumber': 1, 'ETag': 'test-etag1'}]}
+        )
+
+    def test_upload_sorted_data_in_chunks_multiple_chunks(self, s3, mock_conn):
+        mock_conn.create_multipart_upload.return_value = {'UploadId': TEST_UPLOAD_ID}
+        mock_conn.upload_part.side_effect = [
+            {'ETag': 'test-etag1'},
+            {'ETag': 'test-etag2'}
+        ]
+        data = self.make_data_of_size(6 * (1024**2)) # 6MBs of mock data
+
+        s3.upload_sorted_data_in_chunks(TEST_BUCKET_NAME, TEST_KEY_NAME, data)
+
+        assert mock_conn.upload_part.call_count == 2
+        mock_conn.complete_multipart_upload.assert_called_once_with(
+            Bucket=TEST_BUCKET_NAME,
+            Key=TEST_KEY_NAME,
+            UploadId=TEST_UPLOAD_ID,
+            MultipartUpload={
+                'Parts': [
+                    {'PartNumber': 1, 'ETag': 'test-etag1'},
+                    {'PartNumber': 2, 'ETag': 'test-etag2'}
+                ]
+            }
+        )
