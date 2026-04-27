@@ -1,54 +1,91 @@
 <!DOCTYPE html>
-<html>
+<html lang="el">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MapReduce | System Auth</title>
     <style>
+        /* CSS για τέλειο κεντράρισμα */
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             background: #1a1a2e; 
             color: #fff;
-            display: flex; justify-content: center; align-items: center; 
-            height: 100vh; margin: 0;
+            display: flex; 
+            justify-content: center; /* Οριζόντιο κεντράρισμα */
+            align-items: center;     /* Κατακόρυφο κεντράρισμα */
+            overflow: hidden;        /* Αποφυγή scrollbars */
         }
+
         .login-box { 
             background: #16213e; 
-            padding: 40px; 
-            border-radius: 12px; 
-            box-shadow: 0 10px 25px rgba(0,0,0,0.5); 
-            width: 350px;
+            padding: 45px; 
+            border-radius: 16px; 
+            box-shadow: 0 15px 35px rgba(0,0,0,0.6); 
+            width: 380px;
             border: 1px solid #0f3460;
             text-align: center;
+            transition: transform 0.3s ease;
         }
-        h2 { margin-bottom: 25px; color: #4ecca3; }
+
+        .login-box:hover {
+            transform: translateY(-5px);
+        }
+
+        h2 { 
+            margin-top: 0;
+            margin-bottom: 20px; 
+            color: #4ecca3; 
+            font-size: 28px;
+            letter-spacing: 1px;
+        }
         
         .description {
             color: #95a5a6;
-            font-size: 14px;
-            margin-bottom: 30px;
-            line-height: 1.5;
+            font-size: 15px;
+            margin-bottom: 35px;
+            line-height: 1.6;
         }
 
         .login-btn { 
             width: 100%; 
-            padding: 14px; 
+            padding: 16px; 
             background: #4ecca3; 
             border: none; 
-            border-radius: 6px; 
+            border-radius: 8px; 
             color: #1a1a2e; 
-            font-weight: bold; 
+            font-weight: 800; 
             cursor: pointer; 
-            font-size: 16px;
-            transition: 0.3s;
+            font-size: 17px;
+            transition: all 0.3s ease;
             text-decoration: none;
-            display: inline-block;
+            display: block; /* Για να πιάνει όλο το πλάτος ως anchor */
+            box-sizing: border-box; /* Για να μην ξεφεύγει το padding */
         }
+
         .login-btn:hover { 
             background: #45b393; 
-            transform: translateY(-2px); 
-            box-shadow: 0 5px 15px rgba(78, 204, 163, 0.3);
+            box-shadow: 0 8px 20px rgba(78, 204, 163, 0.4);
+        }
+
+        .login-btn:active {
+            transform: scale(0.98);
         }
         
-        .footer { margin-top: 30px; font-size: 12px; color: #546e7a; }
+        .footer { 
+            margin-top: 35px; 
+            font-size: 13px; 
+            color: #546e7a; 
+            border-top: 1px solid #0f3460;
+            padding-top: 20px;
+        }
+
+        /* Script για να παίρνει το state από το URL αν υπάρχει (για το CLI) */
     </style>
 </head>
 <body>
@@ -57,11 +94,11 @@
         <h2>Cluster Login</h2>
         
         <p class="description">
-            Please sign in to manage your MapReduce jobs.
+            Welcome to the MapReduce Distributed System.<br>
+            Please sign in to manage your jobs and nodes.
         </p>
 
-        <!-- Direct link to FastAPI trigger -->
-        <a href="/login" class="login-btn">
+        <a id="login-link" href="/login" class="login-btn">
             Sign In with Keycloak
         </a>
 
@@ -69,6 +106,17 @@
             MapReduce v1.0 | Secured by OpenID Connect
         </div>
     </div>
+
+    <script>
+        // Αν το CLI μας έστειλε εδώ με state (π.χ. ?state=XYZ), 
+        // το περνάμε αυτόματα στο href του κουμπιού.
+        const urlParams = new URLSearchParams(window.location.search);
+        const state = urlParams.get('state');
+        if (state) {
+            const loginLink = document.getElementById('login-link');
+            loginLink.href = `/login?state=${state}`;
+        }
+    </script>
 
 </body>
 </html>

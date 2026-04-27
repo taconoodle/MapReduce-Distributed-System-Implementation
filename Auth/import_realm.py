@@ -4,11 +4,11 @@ import time
 
 def import_realm():
     
-    BASE_URL = "http://keycloak-service:8080" 
+    BASE_URL = "http://localhost:8080" 
     ADMIN_USER = "admin"
     ADMIN_PASS = "admin"
     REALM_NAME = "map-project"
-    CONFIG_PATH = "AUTH/realm-config.json"
+    CONFIG_PATH = "realm-export.json"
     
     print(f"Connecting to Keycloak at {BASE_URL}...")
     timeout = 300
