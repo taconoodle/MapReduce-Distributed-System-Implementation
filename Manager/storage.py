@@ -238,3 +238,72 @@ class S3Storage:
                 UploadId=upload_id,
                 MultipartUpload={'Parts': parts}
             )
+
+    def merge_keys_unsorted(self, source_bucket, source_keys: list, output_key, output_bucket=None):
+        if not source_keys:
+            raise S3ConnectionError('No source keys provided')
+
+        with self._handle_errors():
+            if output_bucket is None:
+                output_bucket = source_bucket
+
+            upload_id = self.conn.create_multipart_upload(
+                Bucket=output_bucket,
+                Key=output_key
+            )['UploadId']
+
+            buffer = bytearray()
+            parts = []
+            part_number = 1
+            for part_number, key in enumerate(source_keys, start=1):
+                key_size = self.conn.head_object(Bucket=source_keys, Key=key)['ContentLength']
+                if key_size >= (5 * (1024 ** 2)):
+                    response = self.conn.upload_part_copy(
+                        Bucket=output_bucket,
+                        Key=output_key,
+                        PartNumber=part_number,
+                        CopySource={
+                            'Bucket': source_bucket,
+                            'Key': key
+                        },
+                        UploadId=upload_id
+                    )
+                    parts.append({'PartNumber': part_number, 'ETag': response['CopyPartResult']['ETag']})
+                else:
+                    buffer.extend(self.conn.get_object(Bucket=source_keys, Key=key)['Body'].read())
+                    if len(buffer) >= (5 * (1024 ** 2)):
+                        response = self.conn.upload_part(
+                            Bucket=output_bucket,
+                            Key=output_key,
+                            PartNumber=part_number,
+                            Body=buffer,
+                            UploadId=upload_id
+                        )
+                        parts.append({'PartNumber': part_number, 'ETag': response['ETag']})
+                        buffer.clear()
+
+            if buffer:
+                response = self.conn.upload_part(
+                    Bucket=output_bucket,
+                    Key=output_key,
+                    PartNumber=part_number,
+                    Body=buffer,
+                    UploadId=upload_id
+                )
+                parts.append({'PartNumber': part_number, 'ETag': response['ETag']})
+
+            self.conn.complete_multipart_upload(
+                Bucket=output_bucket,
+                Key=output_key,
+                MultipartUpload={'Parts': parts},
+                UploadId=upload_id
+            )
+
+    def gen_url_to_get_key(self, bucket, key):
+        with self._handle_errors():
+            url = self.conn.generate_presigned_url(
+                ClientMethod='get_object',
+                Params={'Bucket': bucket, 'Key': key},
+                ExpiresIn=3600
+            )
+            return url
