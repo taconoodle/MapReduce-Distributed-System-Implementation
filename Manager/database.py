@@ -29,8 +29,7 @@ class Database:
                 job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id VARCHAR(50) NOT NULL,
                 input_file_name VARCHAR(255),
-                output_file_name VARCHAR(255),
-                job_status VARCHAR(20) DEFAULT 'Pending',
+                job_status VARCHAR(20) DEFAULT 'Pending upload',
                 total_chunks INTEGER DEFAULT 0,
                 current_phase_completed_tasks INTEGER DEFAULT 0,
                 start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -49,15 +48,16 @@ class Database:
                 cur.execute(q)
             self.conn.commit()
 
-    def insert_job(self, user_id, input_filename, output_filename):
+    def insert_job(self, user_id, input_filename):
         query = """
-            INSERT INTO job_metadata.jobs (user_id, input_file_name, output_file_name)
-            VALUES (%s, %s, %s)
+            INSERT INTO job_metadata.jobs (user_id, input_file_name)
+            VALUES (%s, %s)
             RETURNING job_id;"""
         with self.conn.cursor() as cur:
-            cur.execute(query, (user_id, input_filename, output_filename))
+            cur.execute(query, (user_id, input_filename))
             job_id = cur.fetchone()[0]
             self.conn.commit()
+        return job_id
 
     def update_job_status(self, job_id, status):
         query = "UPDATE job_metadata.jobs SET job_status = %s WHERE job_id = %s;"
@@ -90,7 +90,7 @@ class Database:
             cur.execute(query, (job_id,))
             self.conn.commit()
 
-    def get_job_info(self, job_id, field="job_status"):
+    def get_job_info(self, job_id: str, field="job_status"):
         query = sql.SQL("SELECT {} FROM job_metadata.jobs WHERE job_id = %s;").format(sql.Identifier(field))
         with self.conn.cursor() as cur:
             cur.execute(query, (job_id,))

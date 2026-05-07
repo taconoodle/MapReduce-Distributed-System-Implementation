@@ -145,6 +145,16 @@ class S3Storage:
                 for key, value in pairs.items():
                     yield key, value
 
+
+    def get_key(self, bucket, key):
+        with self._handle_errors():
+            obj = self.conn.get_object(
+                Bucket=bucket,
+                Key=key
+            )
+            return obj
+
+    # TODO: Merge this with a general method
     def get_json_body(self, bucket, key):
         with self._handle_errors():
             body = self.conn.get_object(
@@ -307,3 +317,40 @@ class S3Storage:
                 ExpiresIn=3600
             )
             return url
+
+    def gen_url_to_put_key(self, bucket, key):
+        with self._handle_errors():
+            url = self.conn.generate_presigned_url(
+                ClientMethod='put_object',
+                Params={'Bucket': bucket, 'Key': key},
+                ExpiresIn=3600
+            )
+            return url
+
+    def gen_urls_for_multipart(self, bucket, key, num_of_parts):
+        with self._handle_errors():
+            mpu = self.conn.create_multipart_upload(
+                Bucket=bucket,
+                Key=key
+            )
+            upload_id = mpu['UploadId']
+
+            urls = []
+            for part_number in range(1, num_of_parts + 1):
+                url = self.conn.generate_presigned_url(
+                    ClientMethod='upload_part',
+                    Params={'Bucket': bucket, 'Key': key, 'PartNumber': part_number, 'UploadId': upload_id},
+                    ExpiresIn=3600
+                )
+                urls.append({'part_number': part_number, 'url': url})
+
+            return upload_id, urls
+
+    def complete_multipart_upload(self, bucket, key, upload_id, parts):
+        with self._handle_errors():
+            self.conn.complete_multipart_upload(
+                UploadId=upload_id,
+                Bucket=bucket,
+                Key=key,
+                MultipartUpload={'Parts': parts}
+            )
