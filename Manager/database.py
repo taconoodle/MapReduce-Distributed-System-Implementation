@@ -21,8 +21,7 @@ class Database:
             user=POSTGRES_USERNAME,
             password=POSTGRES_PASSWORD
         )
-        
-   
+        #check what type are our attributes
         queries = [
             "CREATE SCHEMA IF NOT EXISTS job_metadata;",
             """CREATE TABLE IF NOT EXISTS job_metadata.jobs (
@@ -64,6 +63,12 @@ class Database:
         with self.conn.cursor() as cur:
             cur.execute(query, (status, job_id))
             self.conn.commit()
+    
+    def get_job_status(self, job_id):
+        query = "SELECT job_status FROM job_metadata.jobs WHERE job_id = %s;"
+        with self.conn.cursor() as cur:
+            cur.execute(query, (job_id,))
+            self.conn.commit()
 
     def update_job_chunks(self, job_id, total):
         query = "UPDATE job_metadata.jobs SET total_chunks = %s WHERE job_id = %s;"
@@ -76,8 +81,10 @@ class Database:
             UPDATE job_metadata.jobs
             SET current_phase_completed_tasks = current_phase_completed_tasks + 1
             WHERE job_id = %s
-            RETURNING current_phase_completed_tasks, total_chunks, job_status;
+            RETURNING current_phase_completed_tasks; 
         """
+        #The old version
+        #RETURNING current_phase_completed_tasks, total_chunks, job_status;
         with self.conn.cursor() as cur:
             cur.execute(query, (job_id,))
             res = cur.fetchone()
@@ -88,7 +95,8 @@ class Database:
         query = "UPDATE job_metadata.jobs SET current_phase_completed_tasks = 0 WHERE job_id = %s;"
         with self.conn.cursor() as cur:
             cur.execute(query, (job_id,))
-            self.conn.commit()
+            res = cur.fetchone()
+            return res[0] if res else None
 
     def get_job_info(self, job_id, field="job_status"):
         query = sql.SQL("SELECT {} FROM job_metadata.jobs WHERE job_id = %s;").format(sql.Identifier(field))
@@ -128,6 +136,27 @@ class Database:
         with self.conn.cursor() as cur:
             cur.execute(query, (job_id,))
             self.conn.commit()
+
+
+    def get_tasks_for_job(self, job_id: str):
+        query = """
+            SELECT task_id, task_type, worker_num, task_status 
+            FROM job_metadata.tasks 
+            WHERE job_id = %s;
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(query, (job_id,))
+            rows = cur.fetchall()
+            
+            tasks = []
+            for row in rows:
+                tasks.append({
+                    "task_id": row[0],
+                    "task_type": row[1],
+                    "worker_num": row[2],
+                    "status": row[3]
+                })
+            return tasks
 
     def close(self):
         if self.conn:

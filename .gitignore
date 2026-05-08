@@ -1,0 +1,18 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Pytest & Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE settings (προαιρετικά)
+.vscode/
+.idea/
