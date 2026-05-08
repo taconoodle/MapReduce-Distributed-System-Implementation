@@ -5,8 +5,7 @@ import base64
 from contextlib import asynccontextmanager
 from enum import Enum
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI
 from kubernetes import client, config, watch
 from pydantic import BaseModel
 from starlette import status
@@ -14,8 +13,8 @@ from starlette import status
 
 # from filesplit.split import Split
 
-from Manager.database import Database
-from Manager.storage import S3Storage
+from src.database import Database
+from src.storage import S3Storage
 
 
 logging.basicConfig(level=logging.INFO)
@@ -94,6 +93,7 @@ class Manager:
 
     async def startup(self):
         logger.info(f"[Manager {self.replica_id}] Starting up...")
+        print("IF YOU'RE READING THIS THE SERVER IS UP. LET'S FUCKING GO")
 
         await self.init_services()
 

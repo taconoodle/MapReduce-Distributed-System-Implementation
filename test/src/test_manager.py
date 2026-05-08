@@ -1,7 +1,7 @@
-from Manager.manager import *
+from src.manager import *
 
 import pytest
-from unittest.mock import patch, MagicMock, ANY
+
 
 class TestManager:
     @pytest.fixture

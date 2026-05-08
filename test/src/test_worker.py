@@ -1,4 +1,4 @@
-from Jobs.worker import *
+from src.worker import *
 
 import pytest
 from unittest.mock import patch, MagicMock, ANY, mock_open, call
