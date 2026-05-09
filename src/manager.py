@@ -55,11 +55,10 @@ class Manager:
     async def init_services(self):
         self.db.init_database()
         self.sfs.init_s3()
-        # config.load_incluster_config() # Use this for the container image
-        config.load_kube_config()
+        config.load_incluster_config() # Use this for the container image
+        # config.load_kube_config()
 
     async def recover_from_crash(self):
-        config.load_kube_config()
         v1 = client.CoreV1Api()
 
         label_selector = f"manager_id={self.replica_id}"
@@ -285,7 +284,6 @@ class Manager:
         batch_v1.create_namespaced_job(namespace="default", body=k8s_job)
 
     def delete_all_workers(self, job_id):
-        config.load_kube_config()
         batch_v1 = client.BatchV1Api()
 
         jobs = batch_v1.list_namespaced_job(namespace="default")
@@ -309,7 +307,6 @@ class Manager:
         )
 
     async def watch_job(self, job_id):
-        config.load_kube_config()
         loop = asyncio.get_event_loop()
 
         stop_flag = {"value": False}

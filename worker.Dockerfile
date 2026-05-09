@@ -7,7 +7,7 @@ COPY src/storage.py src/storage.py
 RUN touch src/__init__.py
 
 COPY worker.requirements.txt requirements.txt
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8000
 

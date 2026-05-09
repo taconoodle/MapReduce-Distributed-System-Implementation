@@ -8,11 +8,11 @@ COPY src/database.py src/database.py
 RUN touch __init__.py
 
 COPY manager.requirements.txt requirements.txt
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8000
 
 RUN useradd app
-USER app
+#USER app
 
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
