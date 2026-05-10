@@ -1,4 +1,5 @@
-from Manager.storage import S3Storage
+from storage import S3Storage
+
 from collections import defaultdict
 import json
 import heapq
@@ -165,3 +166,6 @@ class ReduceWorker:
 
         self.s3.close()
         exit(0)
+
+if __name__ == "__main__":
+    print('Hello world')

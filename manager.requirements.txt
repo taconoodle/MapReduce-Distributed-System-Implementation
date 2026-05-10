@@ -1,0 +1,8 @@
+fastapi
+kubernetes
+pydantic
+starlette
+uvicorn[standard]
+psycopg2-binary
+boto3
+botocore

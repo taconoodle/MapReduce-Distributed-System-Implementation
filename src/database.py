@@ -4,7 +4,7 @@ import logging
 
 POSTGRES_USERNAME = 'admin'
 POSTGRES_PASSWORD = 'admin'
-POSTGRES_HOST_URL = 'localhost'
+POSTGRES_HOST_URL = 'postgres-0.postgres-service'
 
 class Database:
     def __init__(self):
@@ -13,7 +13,7 @@ class Database:
     def init_database(self):
         if self.conn is not None and not self.conn.closed:
             return self.conn
-        
+
         self.conn = psycopg2.connect(
             host=POSTGRES_HOST_URL,
             port=5432,

@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: manager-service
+  labels:
+    app: manager
+spec:
+  selector:
+    app: manager
+  clusterIP: None
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8000
+      targetPort: 8000
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: manager
+  labels:
+    app: manager
+spec:
+  selector:
+    matchLabels:
+      app: manager
+  serviceName: manager-service
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: manager
+    spec:
+      serviceAccountName: manager-service-account
+      containers:
+        - name: manager
+          image: vlassisioa/distributed-mapreduce:manager
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: manager-service-account
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-role
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: manager-role-binding
+subjects:
+  - kind: ServiceAccount
+    name: manager-service-account
+roleRef:
+  kind: Role
+  name: manager-role
+  apiGroup: rbac.authorization.k8s.io

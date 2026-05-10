@@ -5,8 +5,7 @@ import base64
 from contextlib import asynccontextmanager
 from enum import Enum
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI
 from kubernetes import client, config, watch
 from pydantic import BaseModel
 from starlette import status
@@ -14,8 +13,8 @@ from starlette import status
 
 # from filesplit.split import Split
 
-from Manager.database import Database
-from Manager.storage import S3Storage
+from src.database import Database
+from src.storage import S3Storage
 
 
 logging.basicConfig(level=logging.INFO)
@@ -56,11 +55,10 @@ class Manager:
     async def init_services(self):
         self.db.init_database()
         self.sfs.init_s3()
-        # config.load_incluster_config() # Use this for the container image
-        config.load_kube_config()
+        config.load_incluster_config() # Use this for the container image
+        # config.load_kube_config()
 
     async def recover_from_crash(self):
-        config.load_kube_config()
         v1 = client.CoreV1Api()
 
         label_selector = f"manager_id={self.replica_id}"
@@ -94,6 +92,7 @@ class Manager:
 
     async def startup(self):
         logger.info(f"[Manager {self.replica_id}] Starting up...")
+        print("IF YOU'RE READING THIS THE SERVER IS UP. LET'S FUCKING GO")
 
         await self.init_services()
 
@@ -285,7 +284,6 @@ class Manager:
         batch_v1.create_namespaced_job(namespace="default", body=k8s_job)
 
     def delete_all_workers(self, job_id):
-        config.load_kube_config()
         batch_v1 = client.BatchV1Api()
 
         jobs = batch_v1.list_namespaced_job(namespace="default")
@@ -309,7 +307,6 @@ class Manager:
         )
 
     async def watch_job(self, job_id):
-        config.load_kube_config()
         loop = asyncio.get_event_loop()
 
         stop_flag = {"value": False}
