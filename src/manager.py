@@ -12,8 +12,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from kubernetes import client, config, watch
 from filesplit.split import Split
 from pydantic import BaseModel
-from Manager.database import Database
-from Manager.storage import S3Storage
+from src.database import Database
+from src.storage import S3Storage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
