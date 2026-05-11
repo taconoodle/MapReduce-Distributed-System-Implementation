@@ -2,7 +2,7 @@ import asyncio
 import threading
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch, call
-from Manager.manager import Manager, JobStatus, TaskStatus
+from src.manager import *
 
 
 # ================================================================
@@ -1061,3 +1061,18 @@ class TestManagerAdvanced:
         manager.handle_task_succeeded.assert_called_once_with(
             "job-ok", "task-ok", "Map", 1
         )
+
+class TestManager:
+    @pytest.fixture
+    def manager(self):
+        return Manager('0')
+
+    def test_spawn_worker_success_without_mock_k8s(self, manager):
+        job_id = 0
+        task_ids = [i for i in range(0, 10)]
+        phase = TaskType.MAP
+        reducer_amount = 4
+        image = 'python'
+
+        for task in task_ids:
+            manager.spawn_worker(job_id, task, phase, reducer_amount, image)

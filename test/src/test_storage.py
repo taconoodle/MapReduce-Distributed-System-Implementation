@@ -1,4 +1,4 @@
-from Manager.storage import S3Storage, S3ConnectionError
+from src.storage import S3Storage, S3ConnectionError
 
 import pytest
 import json

@@ -4,7 +4,7 @@ import logging
 
 POSTGRES_USERNAME = 'admin'
 POSTGRES_PASSWORD = 'admin'
-POSTGRES_HOST_URL = 'localhost'
+POSTGRES_HOST_URL = 'postgres-0.postgres-service'
 
 class Database:
     def __init__(self):
@@ -13,7 +13,7 @@ class Database:
     def init_database(self):
         if self.conn is not None and not self.conn.closed:
             return self.conn
-        
+
         self.conn = psycopg2.connect(
             host=POSTGRES_HOST_URL,
             port=5432,
@@ -21,15 +21,15 @@ class Database:
             user=POSTGRES_USERNAME,
             password=POSTGRES_PASSWORD
         )
-        #check what type are our attributes
+        
+   
         queries = [
             "CREATE SCHEMA IF NOT EXISTS job_metadata;",
             """CREATE TABLE IF NOT EXISTS job_metadata.jobs (
-                job_id UUID PRIMARY KEY,
+                job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id VARCHAR(50) NOT NULL,
                 input_file_name VARCHAR(255),
-                output_file_name VARCHAR(255),
-                job_status VARCHAR(20) DEFAULT 'Pending',
+                job_status VARCHAR(20) DEFAULT 'Pending upload',
                 total_chunks INTEGER DEFAULT 0,
                 current_phase_completed_tasks INTEGER DEFAULT 0,
                 start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -38,7 +38,7 @@ class Database:
                 job_id UUID REFERENCES job_metadata.jobs(job_id),
                 task_id INTEGER,
                 task_type VARCHAR(20),
-                task_status VARCHAR(20),
+                task_status VARCHAR(20) DEFAULT 'Processing',
                 PRIMARY KEY (job_id, task_id)
             );"""
         ]
@@ -48,15 +48,16 @@ class Database:
                 cur.execute(q)
             self.conn.commit()
 
-
-    def insert_job(self, job_id, user_id, input_filename, output_filename):
+    def insert_job(self, user_id, input_filename):
         query = """
-            INSERT INTO job_metadata.jobs (job_id, user_id, input_file_name, output_file_name)
-            VALUES (%s, %s, %s, %s);
-        """
+            INSERT INTO job_metadata.jobs (user_id, input_file_name)
+            VALUES (%s, %s)
+            RETURNING job_id;"""
         with self.conn.cursor() as cur:
-            cur.execute(query, (job_id, user_id, input_filename, output_filename))
+            cur.execute(query, (user_id, input_filename))
+            job_id = cur.fetchone()[0]
             self.conn.commit()
+        return job_id
 
     def update_job_status(self, job_id, status):
         query = "UPDATE job_metadata.jobs SET job_status = %s WHERE job_id = %s;"
@@ -98,7 +99,7 @@ class Database:
             res = cur.fetchone()
             return res[0] if res else None
 
-    def get_job_info(self, job_id, field="job_status"):
+    def get_job_info(self, job_id: str, field="job_status"):
         query = sql.SQL("SELECT {} FROM job_metadata.jobs WHERE job_id = %s;").format(sql.Identifier(field))
         with self.conn.cursor() as cur:
             cur.execute(query, (job_id,))
@@ -111,11 +112,11 @@ class Database:
             cur.execute(query, (tuple(statuses),))
             return [row[0] for row in cur.fetchall()]
 
-
-    def insert_task(self, job_id, task_id, task_type, status):
-        query = "INSERT INTO job_metadata.tasks (job_id, task_id, task_type, task_status) VALUES (%s, %s, %s, %s);"
+    def insert_task(self, job_id, task_id, task_type):
+        query = """INSERT INTO job_metadata.tasks (job_id, task_id, task_type)
+                 VALUES (%s, %s, %s);"""
         with self.conn.cursor() as cur:
-            cur.execute(query, (job_id, task_id, task_type, status))
+            cur.execute(query, (job_id, task_id, task_type))
             self.conn.commit()
 
     def get_task_status(self, job_id, task_id):

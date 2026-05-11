@@ -1,0 +1,3 @@
+cloudpickle
+boto3
+botocore

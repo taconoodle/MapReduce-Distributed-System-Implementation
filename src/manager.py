@@ -2,18 +2,22 @@ import asyncio
 import hashlib
 import logging
 import os
+import base64
 from contextlib import asynccontextmanager
 from enum import Enum
 import threading
 
-
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from kubernetes import client, config, watch
-from filesplit.split import Split
 from pydantic import BaseModel
+from starlette import status
 from src.database import Database
 from src.storage import S3Storage
+
+from src.database import Database
+from src.storage import S3Storage
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,14 +29,17 @@ NAMESPACE     = "default"
 REDUCER_COUNT = 4
 DATA_BUCKET = 'rustfs'
 
+CHUNK_MAX_SIZE = 64 * 1024 * 1024
+
 # Enums
 class JobStatus(str, Enum):
-    PENDING  = "Pending"
-    MAP      = "Map"
-    SHUFFLE  = "Shuffle"
-    REDUCE   = "Reduce"
-    SUCCEED  = "Succeed"
-    FAILED   = "Failed"
+    PENDING   = "Pending upload"
+    QUEUED    = "Queued"
+    MAP       = "Map"
+    SHUFFLE   = "Shuffle"
+    REDUCE    = "Reduce"
+    SUCCEEDED = "Succeed"
+    FAILED    = "Failed"
 
 class TaskType(str, Enum):
     MAP     = "Map"
@@ -42,19 +49,19 @@ class TaskType(str, Enum):
 class TaskStatus(str, Enum):
     PENDING   = "Pending"
     COMPLETED = "Completed"
-    FAILED    = "Failed" #we will see if this necessary
 
 class Manager:
-    def __init__(self, replica_id):
+    def __init__(self, replica_id: str):
         self.replica_id = replica_id
         self.db  = Database()
         self.sfs = S3Storage()
-        #self.watchers: dict[str, asyncio.Task] = {} remove this 
+        # self.watchers: dict[str, asyncio.Task] = {}
 
     async def init_services(self):
         self.db.init_database()
         self.sfs.init_s3()
-        
+        config.load_incluster_config() # Use this for the container image
+        # config.load_kube_config()        
 
     async def startup(self):
         logger.info(f"[Manager {self.replica_id}] Starting up...")
@@ -268,8 +275,6 @@ class Manager:
             logger.info(f"[Manager replica={self.replica_id}] Watcher exited.")
     
     async def handle_task_succeeded(self,job_id, task_id, task_type, worker_num):
-        if self.db.get_task_status(job_id, task_id) == TaskStatus.COMPLETED:
-            return
         self.db.update_task_status(job_id,task_id,TaskStatus.COMPLETED)
         completed=self.db.increment_and_fetch_counters(job_id)
         total=worker_num
@@ -301,22 +306,6 @@ class Manager:
                 #notify UI
                 return
 
-    async def handle_job_failure(self,job_id):
-        self.db.update_job_status(job_id,JobStatus.FAILED)
-        self.db.delete_all_tasks(job_id)
-        await self.send_cancel_signal_to_workers(job_id)
-        #notify UI
-
-        #clean all the buckets from sfs(a try)
-        prefix = f"jobs/{job_id}/"
-        deleted_keys=list(self.sfs.stream_keys_in_dir(DATA_BUCKET, prefix))
-        if not deleted_keys:
-            return
-        
-        for key in deleted_keys:
-            self.sfs.delete_from_bucket(DATA_BUCKET,key)            
-        return
-
     async def verify_token(token: str = Depends()):#inside Depends something on Keycloak
         return
 
@@ -345,24 +334,7 @@ class Manager:
             )
     """
 
-
-    #app = FastAPI()
-
-    #@app.post("/cancel-job/{job_id}")
-    async def cancel_job(self,job_id,token_data: dict = Depends(verify_token)):
-       
-        success = await self.send_cancel_signal_to_workers(job_id)
-
-        if not success:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,detail=f"Job {job_id} not found or already completed",)
-
-        #Maybe this
-        #tasks = self.db.get_tasks_for_job(job_id)
-        #for task in tasks:
-        #   task_id = task["task_id"]
-        #   self.db.update_task_status(task_id,TaskStatus.FAILED)
-        #asyncio.run_coroutine_threadsafe(self.handle_job_failure(job_id,self.replica_id))
-        return {"status": "cancelled", "job_id": job_id}
+    
 
 
     async def send_cancel_signal_to_workers(self,job_id):
@@ -372,32 +344,85 @@ class Manager:
         except client.exceptions.ApiException as e:
             print(f"Exception when calling BatchV1Api delete_namespaced_job: {e}")
             return False
+          
 
-
-
-    """
-    async def transition_to_shuffle(self, job_id):
-        self.db.update_job_status(job_id, JobStatus.SHUFFLE.value)
+    async def transition_to_phase(self, job_id: str, new_phase: TaskType):
+        self.delete_all_workers(job_id)
+        self.db.update_job_status(job_id, new_phase.value)
         self.db.reset_phase_counter(job_id)
-        self.spawn_workers(job_id, TaskType.SHUFFLE, REDUCER_COUNT, image="shuffle-worker:latest")
+        for task_idx in range(3): # TODO: 3 is a placeholder for the amount of shuffler/maangers
+            self.db.insert_task(job_id, task_idx, new_phase.value)
+            if new_phase == TaskType.REDUCE:
+                reduce_fn_bytes = self.sfs.get_key(DATA_BUCKET, f'jobs/{job_id}/input_files/reduce_fn.pkl')['Body'].read()
+                reduce_fn = base64.b64encode(reduce_fn_bytes).decode('utf-8')
+                self.spawn_worker(
+                    job_id=job_id,
+                    task_id=task_idx,
+                    phase=new_phase,
+                    image="python", # TODO: Python is a placeholder
+                    fn_to_pass=reduce_fn
+                )
+            else:
+                self.spawn_worker(
+                    job_id=job_id,
+                    task_id=task_idx,
+                    phase=new_phase,
+                    image="python" # TODO: Python is a placeholder
+                )
 
-    async def transition_to_reduce(self, job_id):
-        self.db.update_job_status(job_id, JobStatus.REDUCE.value)
-        self.db.reset_phase_counter(job_id)
-        self.spawn_workers(job_id, TaskType.REDUCE, REDUCER_COUNT, image="reduce-worker:latest")
+    # async def iter_lines(self, request):
+    #     byte_buffer = bytearray()
+    #     async for byte_chunk in request.stream():
+    #         byte_buffer.extend(byte_chunk)
+    #         while b'\n' in byte_buffer:
+    #             newline_pos = byte_buffer.find(b'\n')
+    #             line = byte_buffer[:newline_pos]
+    #             del byte_buffer[:newline_pos + 1]
+    #             yield line
+    #     if byte_buffer:
+    #         yield bytes(byte_buffer)
 
+    # async def split_input_file(self, request, input_file: str, job_id: str):
+    #     chunk_key_prefix = f'jobs/{job_id}/intermediate_files/chunks/' + input_file.name # TODO: Not sure if input file name is correct
+    #
+    #     num_of_chunks = 0
+    #     buffer = bytearray()
+    #     async for line in self.iter_lines(request):
+    #         buffer.extend(line + b'\n')
+    #
+    #         if len(buffer) > CHUNK_MAX_SIZE:
+    #             chunk_key = chunk_key_prefix + num_of_chunks
+    #             self.sfs.create_object(DATA_BUCKET, chunk_key, bytes(buffer))
+    #             num_of_chunks += 1
+    #             buffer.clear()
+    #
+    #     if buffer:
+    #         chunk_key = chunk_key_prefix + num_of_chunks
+    #         self.sfs.create_object(DATA_BUCKET, chunk_key, bytes(buffer))
+    #         num_of_chunks += 1
+    #
+    #     return num_of_chunks
 
+    async def create_job(self, user_id, file_name):
+        job_id = self.db.insert_job(user_id, file_name)
+        return job_id
 
+    async def init_job(self, job_id):
+        input_filename = self.db.get_job_info(job_id, 'input_file_name')
+        reducer_amt = 3 # TODO: Calculate this somehow
+        num_of_chunks = await self.split_input_file(job_id) # TODO: FIX THIS. IT'S DEPRECATED
 
-    #check this for output prefix Πήρα τις μεθόδους του storage από το δικό σου
-    async def finalize_job(self, job_id):
-        
-        out_file_name = self.db.get_job_info(job_id, "output_file_name")
-        
-        final_output_path = f"jobs/{job_id}/output_files/job_{job_id}.json"
-        
-        self.db.update_job_status(job_id, JobStatus.SUCCEED.value)
+        map_fn_bytes = self.sfs.get_key(DATA_BUCKET, f'jobs/{job_id}/input_files/map_fn.pkl')['Body'].read()
+        map_fn = base64.b64encode(map_fn_bytes).decode('utf-8')
 
+        for task_idx in range(num_of_chunks):
+            self.db.insert_task(job_id, task_idx, TaskType.MAP)
+            # TODO: python as the image is just a placeholder
+            self.spawn_worker(job_id, task_idx, TaskType.MAP,"python", reducer_amt, map_fn)
+        self.db.update_job_status(job_id, JobStatus.QUEUED)
+
+    async def cleanup_job(self, job_id, job_status: JobStatus):
+        self.delete_all_workers(job_id)
 
         intermediate_prefix = f"jobs/{job_id}/intermediate_files/"
         try:
@@ -407,56 +432,87 @@ class Manager:
         except Exception as e:
             logger.warning(f"Cleanup failed for job {job_id}: {e}")
 
-        self.delete_workers(job_id) 
-        self.db.delete_all_tasks(job_id) 
+        self.db.delete_all_tasks(job_id)
+        self.db.update_job_status(job_id, job_status)
+        # TODO: This will most probably be removed, we'll see after Menbal implements the watchers
         self.stop_watcher(job_id)
+
+    #check this for output prefix Πήρα τις μεθόδους του storage από το δικό σου
+    # Thanks bro
+    async def finalize_job(self, job_id, job_status: JobStatus):
+        final_output_path = f"jobs/{job_id}/output_files/{job_id}.json"
+
+        output_keys = self.sfs.stream_keys_in_dir(
+            bucket=DATA_BUCKET,
+            prefix=f'jobs/{job_id}/intermediate_files/reducer_outputs'
+        )
+        self.sfs.merge_keys_unsorted(
+            source_bucket=DATA_BUCKET,
+            source_keys=list(output_keys),
+            output_key=final_output_path
+        )
+        url = self.sfs.gen_url_to_get_key(DATA_BUCKET, final_output_path)
+
+        await self.cleanup_job(job_id, JobStatus.SUCCEEDED)
         logger.info(f"[Job {job_id}] Finalization complete.")
 
-    
-    
+        return url
 
-    def spawn_workers(self, job_id, phase, count, image):
-        config.load_kube_config()
+    def spawn_worker(self, job_id, task_id, phase, image, reducer_amount=None, chunk_to_process=None, fn_to_pass=None):
+        if chunk_to_process is None:
+            chunk_to_process = task_id
         batch_v1 = client.BatchV1Api()
-        
-        for i in range(1, count + 1):
-            worker_name = f"job-{job_id}-{phase.value.lower()}-{i}"
-            
-            self.db.insert_task(job_id, i, phase.value, TaskStatus.PENDING.value)
-            
-            container = client.V1Container(
-                name="worker",
-                image=image,
-                env=[
-                    client.V1EnvVar(name="JOB_ID", value=str(job_id)),
-                    client.V1EnvVar(name="WORKER_ID", value=str(i)),
-                    client.V1EnvVar(name="WORKER_NUM", value=str(count)),
-                ]
-            )
-            
-            template = client.V1PodTemplateSpec(
-                metadata=client.V1ObjectMeta(labels={
-                    "manager_id": self.replica_id,
-                    "job_id": str(job_id),
-                    "task_id": str(i),
-                    "phase": phase.value
-                }),
-                spec=client.V1PodSpec(containers=[container], restart_policy="Never")
-            )
-            
-            k8s_job = client.V1Job(
-                api_version="batch/v1",
-                kind="Job",
-                metadata=client.V1ObjectMeta(name=worker_name),
-                spec=client.V1JobSpec(template=template, backoff_limit=0)
-            )
-            
-            batch_v1.create_namespaced_job(namespace="default", body=k8s_job)
 
-    def delete_workers(self, job_id):
-        config.load_kube_config()
+        worker_name = f"job-{job_id}-{phase.value.lower()}-{task_id}"
+
+        env_variables = [
+                client.V1EnvVar(name="JOB_ID", value=str(job_id)),
+                client.V1EnvVar(name="WORKER_ID", value=str(chunk_to_process)),
+        ]
+        match phase:
+            case TaskType.MAP:
+                env_variables.append(client.V1EnvVar(name="WORKER_NUM", value=str(reducer_amount)))
+                env_variables.append(client.V1EnvVar(name="SERIALIZED_MAP", value=fn_to_pass))
+            case TaskType.REDUCE:
+                env_variables.append(client.V1EnvVar(name="SERIALIZED_REDUCE", value=fn_to_pass))
+            case _:
+                pass
+
+        container = client.V1Container(
+            name="worker",
+            image=image, # TODO: Fill the correct image. We have to containerize the workers first
+            env=env_variables
+        )
+
+        template = client.V1PodTemplateSpec(
+            metadata=client.V1ObjectMeta(labels={
+                "manager_id": self.replica_id,
+                "job_id": str(job_id),
+                "task_id": str(task_id),
+                "phase": phase.value
+            }),
+            spec=client.V1PodSpec(containers=[container], restart_policy="Never")
+        )
+
+        job_spec = client.V1JobSpec(
+            template=template,
+            backoff_limit=3,
+            active_deadline_seconds=300,
+            ttl_seconds_after_finished=120
+        )
+
+        k8s_job = client.V1Job(
+            api_version="batch/v1",
+            kind="Job",
+            metadata=client.V1ObjectMeta(name=worker_name),
+            spec=job_spec
+        )
+
+        batch_v1.create_namespaced_job(namespace="default", body=k8s_job)
+
+    def delete_all_workers(self, job_id):
         batch_v1 = client.BatchV1Api()
-        
+
         jobs = batch_v1.list_namespaced_job(namespace="default")
         for job in jobs.items:
             if str(job_id) in job.metadata.name:
@@ -468,41 +524,138 @@ class Manager:
                     )
                 except: pass
 
-                
+    def delete_worker(self, worker_name, ):
+        batch_v1 = client.BatchV1Api()
 
-     async def restart_active_watchers(self):
-        active_statuses = [JobStatus.MAP.value, JobStatus.REDUCE.value]
-        active_jobs = self.db.get_active_jobs(active_statuses)
-        
-        for job_id in active_jobs:
-            logger.info(f"[Startup] Re-arming watcher for active job {job_id}")
-            self.start_watcher(job_id)
+        batch_v1.delete_namespaced_job(
+            name=worker_name,
+            namespace="default",
+            propagation_policy="Background"
+        )
 
-    async def recover_from_crash(self):
-        config.load_kube_config()
-        v1 = client.CoreV1Api()
-        
-        label_selector = f"manager_id={self.replica_id}"
-        pods = v1.list_namespaced_pod(namespace="default", label_selector=label_selector)
+    async def get_simple_upload_presigned_url(self, job_id, key=None):
+        if key is None:
+            filename = self.db.get_job_info(job_id)['input_file_name']
+            key = f'jobs/{job_id}/input_files/{filename}'
 
-        for pod in pods.items:
-            job_id = pod.metadata.labels.get("job_id")
-            task_id = pod.metadata.labels.get("task_id")
-            pod_phase = pod.status.phase  # 'Succeeded', 'Failed', 'Running'
-            
-            if not job_id or not task_id:
-                continue
+        url = self.sfs.gen_url_to_put_key(DATA_BUCKET, key)
+        return url
 
-            db_status = self.db.get_task_status(job_id, task_id)
+    async def get_multipart_upload_presigned_url(self, job_id, num_of_parts):
+        filename = self.db.get_job_info(job_id)['input_file_name']
+        key = f'jobs/{job_id}/input_files/{filename}'
 
-            if db_status != TaskStatus.COMPLETED:
-                if pod_phase == "Succeeded":
-                    logger.info(f"[Recovery] Task {task_id} of Job {job_id} found Succeeded.")
-                    await self.handle_task_succeeded(job_id, task_id)
-                elif pod_phase == "Failed":
-                    logger.error(f"[Recovery] Task {task_id} of Job {job_id} found Failed.")
-                    await self.handle_job_failure(job_id, pod.metadata.name)
+        upload_id, multipart_urls = self.sfs.gen_urls_for_multipart(DATA_BUCKET, key, num_of_parts)
+        return upload_id, multipart_urls
 
-   
-   
-    """    
+    async def complete_presigned_multipart_upload(self, job_id, upload_id, parts):
+        filename = self.db.get_job_info(job_id)['input_file_name']
+        key = f'jobs/{job_id}/input_files/{filename}'
+
+        self.sfs.complete_multipart_upload(DATA_BUCKET, key, upload_id, parts)
+
+
+manager_instance : Manager = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global manager_instance
+
+    replica_id = os.getenv("MANAGER-ID", "manager-0")
+    manager_instance = Manager(replica_id)
+    await manager_instance.startup()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+get_manager = lambda: manager_instance
+
+class JobSubmitRequest(BaseModel):
+    user_id: int
+    file_name: str
+    file_size: int
+    part_size: int
+
+class JobStartRequest(BaseModel):
+    user_id: int
+
+class MultipartPresignRequest(BaseModel):
+    filename: str
+    file_size: int
+    part_size: int
+
+class MultipartCompleteRequest(BaseModel):
+    upload_id: str
+    parts: list[dict[str, int | str]] # [{"part_number": int, "etag": str}]
+
+# @app.post("/jobs/{job_id}/uploads/simple/presign", status_code=status.HTTP_200_OK)
+# async def simple_presign(job_id: int):
+#     url = await manager_instance.get_simple_upload_presigned_url(job_id)
+#     return {
+#         "url": url
+#     }
+
+# @app.post("/jobs/{job_id}/uploads/multipart/presign", status_code=status.HTTP_200_OK)
+# async def multipart_presign(job_id: int, request: MultipartPresignRequest):
+#     num_of_chunks = (request.file_size // request.part_size) + 1
+#
+#     # TODO: Also add the file name in the database
+#     upload_id, part_urls = await manager_instance.get_multipart_upload_presigned_url(job_id, num_of_chunks)
+#     return {
+#         'upload_id': upload_id,
+#         'part_urls': part_urls
+#     }
+
+@app.post('/jobs/submit', status_code=status.HTTP_201_CREATED)
+async def submit_job(request: JobSubmitRequest):
+    job_id = await manager_instance.init_job(request.user_id)
+
+    map_fn_url = await manager_instance.get_simple_upload_presigned_url(job_id, key=f'jobs/{job_id}/input_files/map_fn.pkl')
+    reduce_fn_url = await manager_instance.get_simple_upload_presigned_url(job_id, key=f'jobs/{job_id}/input_files/reduce_fn.pkl')
+
+    if request.file_size < (5 * (1024 ** 2)):
+        upload_url = await manager_instance.get_simple_upload_presigned_url(job_id)
+        return {
+            'job_id': job_id,
+            'map_url': map_fn_url,
+            'reduce_url': reduce_fn_url,
+            'upload_type': 'simple',
+            'upload_url': upload_url
+        }
+    else:
+        num_of_chunks = (request.file_size // request.part_size) + 1
+        upload_id, part_urls = await manager_instance.get_multipart_upload_presigned_url(job_id, num_of_chunks)
+        return {
+            'job_id': job_id,
+            'map_url': map_fn_url,
+            'reduce_url': reduce_fn_url,
+            'upload_type': 'multipart',
+            'part_urls': part_urls
+        }
+
+@app.post("/jobs/{job_id}/uploads/multipart/complete", status_code=status.HTTP_200_OK)
+async def multipart_complete(job_id: int, request: MultipartCompleteRequest):
+    parts = []
+    for part in request.parts:
+        parts.append({'ETag': part['etag'], 'PartNumber': part['part_number']})
+    await manager_instance.complete_presigned_multipart_upload(job_id, request.upload_id, parts)
+
+@app.post('/jobs/{job_id}/start', status_code=status.HTTP_202_ACCEPTED)
+async def start_job(job_id, request: JobStartRequest):
+    await manager_instance.init_job(job_id)
+    
+@app.post("/cancel-job/{job_id}")
+async def cancel_job(self,job_id,token_data: dict = Depends(verify_token)):
+
+    success = await self.send_cancel_signal_to_workers(job_id)
+
+    if not success:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,detail=f"Job {job_id} not found or already completed",)
+
+    #Maybe this
+    #tasks = self.db.get_tasks_for_job(job_id)
+    #for task in tasks:
+    #   task_id = task["task_id"]
+    #   self.db.update_task_status(task_id,TaskStatus.FAILED)
+    #asyncio.run_coroutine_threadsafe(self.handle_job_failure(job_id,self.replica_id))
+    return {"status": "cancelled", "job_id": job_id}
