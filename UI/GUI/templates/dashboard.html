@@ -129,20 +129,10 @@
 
 <script>
     function updateStatus() {
-        try {
-            let response = await fetch(`/api/job-status/${jobId}`);
-            let data = await response.json();
-
-            if (data.status === "SYSTEM_OFFLINE") {
-                showStatusBanner("System is reconnecting, stand by...", "warning");
-            } else {
-                document.getElementById(`status-${jobId}`).innerText = data.status;
-            }
-    }   catch (error) {
-            // This triggers if the UI itself is down (502/Connection Refused)
-            showStatusBanner("🔌 Lost connection to UI. Reconnecting...", "danger");
-            // Retry again in 5 seconds automatically
-            setTimeout(() => updateJobStatus(jobId), 5000);
+    const fileInput = document.getElementById('jobFile');
+    const statusBox = document.getElementById('status');
+    if (fileInput.files.length > 0) {
+        statusBox.innerHTML = `> File Selected: ${fileInput.files[0].name}<br>> Size: ${(fileInput.files[0].size / 1024).toFixed(2)} KB<br>> Ready for Deployment.`;
     }
 }
 

@@ -4,12 +4,14 @@ import hashlib
 import base64
 import secrets
 from GUI.utils import get_user_from_cookie
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse, HTMLResponse
 from GUI.constants import AUTH_URL, CLIENT_ID, REDIRECT_URI, TOKEN_URL
+from jose import jwt
 
 app = FastAPI()
+MANAGER_URL = "http://manager-service:8000"
 
 # --- CLI SESSION STORAGE ---
 cli_sessions = {} 
@@ -29,15 +31,15 @@ async def root(request: Request, state: str = None):
 
 @app.get("/login")
 async def login_trigger(state: str = None):
-    # 1. Δημιουργούμε έναν τυχαίο Code Verifier
+    
     code_verifier = secrets.token_urlsafe(64)
     
-    # 2. Δημιουργούμε το Code Challenge (SHA256 hash)
+    
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode()).digest()
     ).decode().replace('=', '')
 
-    # 3. Φτιάχνουμε το URL με τις PKCE παραμέτρους
+
     target = (
         f"{AUTH_URL}?client_id={CLIENT_ID}"
         f"&response_type=code"
@@ -52,13 +54,12 @@ async def login_trigger(state: str = None):
     
     response = RedirectResponse(url=target)
     
-    # 4. Αποθηκεύουμε τον verifier σε ένα προσωρινό cookie για το επόμενο βήμα
     response.set_cookie(key="pkce_verifier", value=code_verifier, httponly=True, max_age=300)
     return response
 
 @app.get("/callback")
 async def auth_callback(request: Request, code: str, state: str = None):
-    # 1. Παίρνουμε τον verifier από το cookie
+    # take verifier from cookie 
     code_verifier = request.cookies.get("pkce_verifier")
     
     data = {
@@ -69,8 +70,7 @@ async def auth_callback(request: Request, code: str, state: str = None):
         "code_verifier": code_verifier,
     }
     
-    # 2. Ανταλλαγή code με token
-    # Χρησιμοποιούμε άλλο όνομα (keycloak_res) για να μη μπερδευτεί με το Response της FastAPI
+    # exchange code with token
     keycloak_res = requests.post(TOKEN_URL, data=data)
     token_data = keycloak_res.json()
     access_token = token_data.get("access_token")
@@ -98,10 +98,10 @@ async def auth_callback(request: Request, code: str, state: str = None):
         """)
     # --------------------------------------
 
-    # 3. Προετοιμασία της απάντησης στον Browser
+    
     response = RedirectResponse(url="/dashboard")
     
-    # Θέτουμε το cookie για το GUI
+
     response.set_cookie(
         key="auth_token", 
         value=access_token, 
@@ -110,7 +110,7 @@ async def auth_callback(request: Request, code: str, state: str = None):
         samesite="lax"
     )
     
-    # Καθαρίζουμε το PKCE cookie
+
     response.delete_cookie("pkce_verifier")
     
     return response
@@ -164,48 +164,80 @@ def get_token_from_request(request: Request):
 # --- API ENDPOINTS ---
 
 @app.post("/api/submit-job")
-async def handle_job_upload(request: Request):
+async def submit_job(request: Request, file: UploadFile = File(...)):
+    """
+    job submission process:
+    1. validates the user JWT
+    2. requests URL from the manager
+    3. proxies the file upload
+    4. triggers the Job start on the manager
+    """
+    
+    # check user token
     token = get_token_from_request(request)
     if not token:
-        return JSONResponse(status_code=401, content={"message": "Authentication required"})
-    
+        raise HTTPException(status_code=401, detail="Authentication token missing")
+
     try:
-        form = await request.form()
-        if not form:
-            return {"status": "error", "message": "No data received"}
-
-        file = next(iter(form.values())) 
-        if not file.filename.endswith('.json'):
-            return {"status": "error", "message": "Invalid format. Please upload a .json file."}
-
-        content = await file.read()
-        job_data = json.loads(content)
-
-        manager_url = "http://manager-service:8000/jobs" 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
+        # extract user info from the JWT 
+        payload = jwt.get_unverified_claims(token)
+        user_id = payload.get("sub")
+        username = payload.get("preferred_username")
+        
+        # payload for the manager
+        submit_payload = {
+            "user_id": user_id,
+            "file_name": file.filename,
+            "file_size": file.size if file.size else 0,
+            "part_size": 5 * 1024 * 1024  # Standard 5MB chunk size for multipart
         }
-        try:
-            response = requests.post(manager_url, json=job_data, headers=headers, timeout=5)
-            return response.json() 
-        except Exception as e:
-            return {"status": "success", "message": f"Job received (Manager offline simulation)"}
-            
+        
+        # requesting manager url to start the process
+        manager_res = requests.post(f"{MANAGER_URL}/jobs/submit", json=submit_payload)
+        manager_res.raise_for_status()
+        job_data = manager_res.json()
+        
+        job_id = job_data.get("job_id")
+        upload_url = job_data.get("upload_url")  # URL for PUT request
+
+        # proxy the file
+        file_content = await file.read()
+        s3_res = requests.put(upload_url, data=file_content)
+        s3_res.raise_for_status()
+    
+        # trigger workers
+        start_payload = {"user_id": user_id}
+        start_res = requests.post(
+            f"{MANAGER_URL}/jobs/{job_id}/start", 
+            json=start_payload
+        )
+        start_res.raise_for_status()
+
+        return {
+            "status": "success",
+            "message": f"Job {job_id} submitted by {username} is now queued",
+            "job_id": job_id
+        }
+
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print(f"❌ Error during submission: {e}")
+        return JSONResponse(status_code=500, content={"message": "Internal Proxy Error"})
 
 @app.get("/api/job-status/{job_id}")
 async def check_status(job_id: str, request: Request):
     token = get_token_from_request(request)
     if not token:
         return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-    
-    manager_url = f"http://manager-service:8000/jobs/{job_id}"
-    headers = {"Authorization": f"Bearer {token}"}
+
     try:
-        response = requests.get(manager_url, headers=headers, timeout=3)
-        return response.json() if response.status_code == 200 else {"status": "UNKNOWN"}
+        # proxy the request to the manager
+        res = requests.get(f"{MANAGER_URL}/jobs/{job_id}")
+        res.raise_for_status()
+        
+        
+        return res.json()
     except Exception:
         return {"status": "WAITING"}
 
@@ -218,13 +250,29 @@ async def download_result(job_id: str, request: Request):
     manager_url = f"http://manager-service:8000/internal/results/{job_id}"
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        response = requests.get(manager_url, headers=headers, stream=True, timeout=10)
-        if response.status_code == 200:
-            return StreamingResponse(
-                response.iter_content(chunk_size=1024),
-                media_type="application/json",
-                headers={"Content-Disposition": f"attachment; filename=result_{job_id}.json"}
-            )
-        return JSONResponse(status_code=404, content={"message": "File not ready"})
+        # ask the manager for the job status and the result URL
+        res = requests.get(f"{MANAGER_URL}/jobs/{job_id}")
+        res.raise_for_status()
+        job_info = res.json()
+
+        if job_info.get("status") != "Succeeded":
+            return JSONResponse(status_code=400, content={"message": "Job not finished yet"})
+
+        # get the url 
+        s3_presigned_url = job_info.get("result_url")
+        
+        if not s3_presigned_url:
+            return JSONResponse(status_code=404, content={"message": "Download link not found"})
+
+        # proxy the download 
+        response = requests.get(s3_presigned_url, stream=True, timeout=15)
+        
+        return StreamingResponse(
+            response.iter_content(chunk_size=1024 * 1024), # 1MB chunks
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=results_{job_id}.json"}
+        )
+
     except Exception as e:
-        return JSONResponse(status_code=500, ncotent={"message": str(e)})
+        print(f"Download Error: {e}")
+        return JSONResponse(status_code=500, content={"message": f"failed to retrieve results: {str(e)}"})

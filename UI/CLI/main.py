@@ -108,18 +108,64 @@ def submit(file_path: str):
             
             if response.status_code == 200:
                 result = response.json()
-                console.print("[bold green]🚀 Job Submitted Successfully![/bold green]")
+                console.print("[bold green] Job Submitted Successfully![/bold green]")
                 console.print(f"Manager response: [white]{result.get('message', 'N/A')}[/white]")
             else:
                 console.print(f"[red] Failed: {response.status_code} - {response.text}[/red]")
         except Exception as e:
             console.print(f"[red] Connection Error: {e}[/red]")
+                
+@app.command()
+def status(job_id: str):
+    """Check the current status of a submitted job"""
+    token = get_token()
+    headers = {"Authorization": f"Bearer {token}"}
 
+    try:
+        response = requests.get(f"{UI_SERVICE_URL}/api/job-status/{job_id}", headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            current_status = data.get("status", "Unknown")
+            
+            color = "green" if current_status == "Succeeded" else "yellow"
+            if current_status == "Failed": color = "red"
+            
+            console.print(f"Job Status: [bold {color}]{current_status}[/bold {color}]")
+            
+            if current_status == "Succeeded":
+                console.print("[bold green] Job is finished! [/bold green]")
+        else:
+            console.print(f"[red]Failed to get status: {response.status_code}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        
+@app.command()
+def download(job_id: str):
+    """Download the final JSON results of a job"""
+    token = get_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        with console.status("[bold blue]Downloading results..."):
+            response = requests.get(f"{UI_SERVICE_URL}/api/download/{job_id}", headers=headers, stream=True)
+            
+            if response.status_code == 200:
+                filename = f"results_{job_id}.json"
+                with open(filename, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                console.print(f"[bold green] Success! Results saved as {filename}[/bold green]")
+            else:
+                console.print(f"[red]Download failed: {response.status_code}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")        
+        
 @app.command()
 def exit_cli():
     """Successfully exited and clear token"""
     if TOKEN_FILE.exists():
         try:
+            
             TOKEN_FILE.unlink() 
         except Exception as e:
             console.print(f"[red] Error on exit: {e}[/red]")
@@ -143,6 +189,12 @@ def main(ctx: typer.Context):
                 elif command.startswith("submit "):
                     file = command.replace("submit ", "").strip()
                     submit(file)
+                elif command.startswith("status "):
+                    jid = command.replace("status ", "").strip()
+                    status(jid)
+                elif command.startswith("download "):
+                    jid = command.replace("download ", "").strip()
+                    download(jid)    
                 elif command == "exit":
                     exit_cli()
                 elif command == "":

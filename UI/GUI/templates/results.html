@@ -60,40 +60,53 @@
         const progressBar = document.getElementById('progressBar');
         const badge = document.getElementById('badge');
         let progress = 0;
-
-        //  Set an interval to check status every 2 seconds
+        
         const pollInterval = setInterval(async () => {
             try {
                 const response = await fetch(`/api/job-status/${jobId}`);
 
-                // --- THE AUTH CHECK ---
                 if (response.status === 401) {
-                    clearInterval(pollInterval); // Stop trying to hit the server
-                    alert("Your session has expired. Redirecting to login.");
+                    clearInterval(pollInterval);
+                    alert("Your session has expired.");
                     window.location.href = '/';
                     return;
                 }
 
                 const data = await response.json();
-                console.log("Status Update:", data);
+                const status = data.status;
 
-                if (data.status === "COMPLETED") {
+                // Mapping statuses to percentages for the progress bar
+                const statusMap = {
+                    "Pending upload": 5,
+                    "Queued": 10,
+                    "Map": 30,
+                    "Shuffle": 50,
+                    "Reduce": 80,
+                    "Succeed": 100
+                };
+
+                if (status === "Succeed") {
                     clearInterval(pollInterval);
                     progressBar.style.width = "100%";
                     badge.innerText = "COMPLETED";
                     badge.className = "status-badge status-complete";
                     document.getElementById('downloadBtn').style.display = "block";
-                    document.getElementById('downloadBtn').style.background = "#4ecca3"; // Ensure visible
+                } else if (status === "Failed") {
+                    clearInterval(pollInterval);
+                    badge.innerText = "FAILED";
+                    badge.style.background = "#e94560";
+                    progressBar.style.background = "#e94560";
                 } else {
-                    if (progress < 90) progress += 5;
-                    progressBar.style.width = progress + "%";
-                    badge.innerText = data.status || "PROCESSING";
+                    // Update progress based on the map, or increment slowly if status is unknown
+                    let targetProgress = statusMap[status] || progress + 2;
+                    progressBar.style.width = targetProgress + "%";
+                    badge.innerText = status || "PROCESSING";
                 }
             } catch (err) {
                 console.error("Polling error:", err);
-                // We don't clear the interval here in case it's just a temporary network problem
             }
         }, 2000);
+        
     }
 
     function downloadResult() {
