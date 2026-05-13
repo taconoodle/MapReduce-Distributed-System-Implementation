@@ -15,12 +15,15 @@ spec:
       containers:
       - name: redis
         image: redis:latest
-        command: ["redis-server", "--appendonly", "yes"]
+        command: ["sh", "-c", "redis-server --appendonly yes --requirepass $REDIS_PASSWORD"]
+        env:
+        - name: REDIS_PASSWORD
+          value: "admin" 
         ports:
         - containerPort: 6379
         volumeMounts:
         - name: redis-data          
-          mountPath: /dataredis          
+          mountPath: /data 
       volumes:
       - name: redis-data           
         persistentVolumeClaim:
