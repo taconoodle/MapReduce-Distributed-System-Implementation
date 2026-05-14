@@ -11,8 +11,7 @@ from GUI.constants import AUTH_URL, CLIENT_ID, REDIRECT_URI, TOKEN_URL
 from jose import jwt
 
 app = FastAPI()
-MANAGER_URL = "http://manager-service:8000"
-
+MANAGER_URL = "http://localhost:8001"
 # --- CLI SESSION STORAGE ---
 cli_sessions = {} 
 
@@ -181,15 +180,18 @@ async def submit_job(request: Request, file: UploadFile = File(...)):
     try:
         # extract user info from the JWT 
         payload = jwt.get_unverified_claims(token)
-        user_id = payload.get("sub")
+        user_id = int(payload.get("sub"))
+        file_content = await file.read()
+        await file.seek(0)
+        actual_file_size = len(file_content)
         username = payload.get("preferred_username")
         
         # payload for the manager
         submit_payload = {
             "user_id": user_id,
-            "file_name": file.filename,
-            "file_size": file.size if file.size else 0,
-            "part_size": 5 * 1024 * 1024  # Standard 5MB chunk size for multipart
+            "file_name": str(file.filename),
+            "file_size": int(actual_file_size),
+            "part_size": 5242880  # Standard 5MB chunk size 
         }
         
         # requesting manager url to start the process
@@ -198,25 +200,16 @@ async def submit_job(request: Request, file: UploadFile = File(...)):
         job_data = manager_res.json()
         
         job_id = job_data.get("job_id")
-        upload_url = job_data.get("upload_url")  # URL for PUT request
-
-        # proxy the file
-        file_content = await file.read()
-        s3_res = requests.put(upload_url, data=file_content)
-        s3_res.raise_for_status()
-    
-        # trigger workers
-        start_payload = {"user_id": user_id}
-        start_res = requests.post(
-            f"{MANAGER_URL}/jobs/{job_id}/start", 
-            json=start_payload
-        )
-        start_res.raise_for_status()
+        upload_url = job_data.get("upload_url")
+        map_url = job_data.get("map_url")
+        reduce_url = job_data.get("reduce_url")
 
         return {
-            "status": "success",
-            "message": f"Job {job_id} submitted by {username} is now queued",
-            "job_id": job_id
+            "job_id": job_id,
+            "upload_url": upload_url,
+            "map_url": map_url,
+            "reduce_url": reduce_url,
+            "status": "success"
         }
 
     except jwt.JWTError:
