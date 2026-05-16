@@ -10,26 +10,26 @@ import cloudpickle
 class MapWorker:
     def __init__(self):
         # self.job_id = os.getenv("JOB_ID")
-        # self.worker_id = os.getenv("WORKER_ID")
+        # self.worker_index = os.getenv("WORKER_IDX")
         # self.worker_num = os.getenv("WORKER_NUM")
-        # self.map_fn = self.load_map_fn()
+        self.map_fn = self.load_map_fn()
         self.job_id = 1
-        self.worker_id = 1
+        self.worker_index = 1
         self.worker_num = 3
 
         self.data_bucket = 'rustfs'
         self.s3 = S3Storage()
 
-    def map_fn(self, data):
-        for k, v in data.items():
-            yield k, 1
+    # def map_fn(self, data):
+    #     for k, v in data.items():
+    #         yield k, 1
 
     def load_map_fn(self):
         serialized_map_fn = os.getenv("SERIALIZED_MAP")
         return cloudpickle.loads(base64.b64decode(serialized_map_fn))
 
     def get_chunk(self):
-        chunk_key = f'jobs/{self.job_id}/intermediate_files/chunks/chunk_{self.worker_id}'
+        chunk_key = f'jobs/{self.job_id}/intermediate_files/chunks/{self.worker_index}'
         self.s3.download_from_bucket(self.data_bucket, chunk_key, f'/data/chunk')
 
     def get_responsible_shuffler(self, key):
@@ -68,7 +68,7 @@ class MapWorker:
 
         # Write the dictionary entry of each shuffler to a json file
         for shuffler_id, shuffler_data in map_results.items():
-            output_key = f'jobs/{self.job_id}/intermediate_files/mapper_outputs/shuffler_{shuffler_id}/mapper_{self.worker_id}.json'
+            output_key = f'jobs/{self.job_id}/intermediate_files/mapper_outputs/shuffler_{shuffler_id}/mapper_{self.worker_index}.json'
             with open('/data/output', 'w') as file:
                 json.dump(shuffler_data, file)
             self.s3.upload_to_bucket(self.data_bucket, '/data/output', output_key)
@@ -79,9 +79,9 @@ class MapWorker:
 class ShuffleWorker:
     def __init__(self):
         # self.job_id = os.getenv("JOB_ID")
-        # self.worker_id = os.getenv("WORKER_ID")
+        # self.worker_index = os.getenv("WORKER_IDX")
         self.job_id = 1
-        self.worker_id = 1
+        self.worker_index = 1
 
         self.data_bucket = 'rustfs'
         self.s3 = S3Storage()
@@ -91,9 +91,9 @@ class ShuffleWorker:
         self.s3.init_s3()
 
         common_key_prefix = f'jobs/{self.job_id}/intermediate_files'
-        input_data_prefix = common_key_prefix + f'/mapper_outputs/shuffler_{self.worker_id}'
-        temp_output_prefix = common_key_prefix + f'/shuffler_outputs/temp/shuffler_{self.worker_id}'
-        output_key = common_key_prefix + f'/shuffler_outputs/reducer_{self.worker_id}/shuffler_{self.worker_id}.json'
+        input_data_prefix = common_key_prefix + f'/mapper_outputs/shuffler_{self.worker_index}'
+        temp_output_prefix = common_key_prefix + f'/shuffler_outputs/temp/shuffler_{self.worker_index}'
+        output_key = common_key_prefix + f'/shuffler_outputs/reducer_{self.worker_index}/shuffler_{self.worker_index}.json'
 
         # Get each mapper output file, sort it and store result
         shuffler_keys = self.s3.stream_keys_in_dir(self.data_bucket, input_data_prefix)
@@ -117,10 +117,10 @@ class ShuffleWorker:
 class ReduceWorker:
     def __init__(self):
         # self.job_id = os.getenv("JOB_ID")
-        # self.worker_id = os.getenv("WORKER_ID")
-        # self.reduce_fn = self.load_reduce_fn()
+        # self.worker_index = os.getenv("WORKER_IDX")
+        self.reduce_fn = self.load_reduce_fn()
         self.job_id = 1
-        self.worker_id = 1
+        self.worker_index = 1
 
         self.data_bucket = 'rustfs'
         self.s3 = S3Storage()
@@ -129,8 +129,8 @@ class ReduceWorker:
         serialized_reduce_fn = os.getenv("SERIALIZED_REDUCE")
         return cloudpickle.loads(base64.b64decode(serialized_reduce_fn))
 
-    def reduce_fn(self, key, values):
-        return key, sum(values)
+    # def reduce_fn(self, key, values):
+    #     return key, sum(values)
 
     def reduce_lines(self, data):
         previous_key = None
@@ -157,7 +157,7 @@ class ReduceWorker:
     def run(self):
         self.s3.init_s3()
         common_key_prefix = f'jobs/{self.job_id}'
-        input_data_prefix = common_key_prefix + f'/intermediate_files/shuffler_outputs/reducer_{self.worker_id}/shuffler_{self.worker_id}.json'
+        input_data_prefix = common_key_prefix + f'/intermediate_files/shuffler_outputs/reducer_{self.worker_index}/shuffler_{self.worker_index}.json'
         output_prefix = common_key_prefix + f'/output_files/job_{self.job_id}.json'
 
         input_lines = self.s3.stream_file_pairs(self.data_bucket, input_data_prefix)

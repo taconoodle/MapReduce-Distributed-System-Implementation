@@ -40,6 +40,11 @@ spec:
           ports:
             - containerPort: 8000
               name: http
+          env:
+            - name: MANAGER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
 
 ---
 apiVersion: v1

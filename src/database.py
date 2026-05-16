@@ -11,19 +11,20 @@ class Database:
         self.conn = None
         
     def init_database(self):
-        if self.conn is not None and not self.conn.closed:
-            return self.conn
-
-        self.conn = psycopg2.connect(
-            host=POSTGRES_HOST_URL,
-            port=5432,
-            dbname='distributed_db',
-            user=POSTGRES_USERNAME,
-            password=POSTGRES_PASSWORD
-        )
+        if self.conn is None or self.conn.closed:
+            self.conn = psycopg2.connect(
+                host=POSTGRES_HOST_URL,
+                port=5432,
+                dbname='distributed_db',
+                user=POSTGRES_USERNAME,
+                password=POSTGRES_PASSWORD
+            )
         
    
         queries = [
+            # "DROP TABLE job_metadata.tasks;", # TODO: Remove this after testing
+            # "DROP TABLE job_metadata.jobs;", # TODO: Remove this after testing
+            # "DROP SCHEMA job_metadata CASCADE;", # TODO: Remove this after testing
             "CREATE SCHEMA IF NOT EXISTS job_metadata;",
             """CREATE TABLE IF NOT EXISTS job_metadata.jobs (
                 job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -31,6 +32,7 @@ class Database:
                 input_file_name VARCHAR(255),
                 job_status VARCHAR(20) DEFAULT 'Pending upload',
                 total_chunks INTEGER DEFAULT 0,
+                reducer_amount INTEGER DEFAULT 1,
                 current_phase_completed_tasks INTEGER DEFAULT 0,
                 start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );""",
@@ -42,11 +44,13 @@ class Database:
                 PRIMARY KEY (job_id, task_id)
             );"""
         ]
-        
+
         with self.conn.cursor() as cur:
             for q in queries:
                 cur.execute(q)
             self.conn.commit()
+
+        return self.conn
 
     def insert_job(self, user_id, input_filename):
         query = """
@@ -57,7 +61,7 @@ class Database:
             cur.execute(query, (user_id, input_filename))
             job_id = cur.fetchone()[0]
             self.conn.commit()
-        return job_id
+        return str(job_id)
 
     def update_job_status(self, job_id, status):
         query = "UPDATE job_metadata.jobs SET job_status = %s WHERE job_id = %s;"
@@ -75,6 +79,12 @@ class Database:
         query = "UPDATE job_metadata.jobs SET total_chunks = %s WHERE job_id = %s;"
         with self.conn.cursor() as cur:
             cur.execute(query, (total, job_id))
+            self.conn.commit()
+
+    def update_job_reducer_amount(self, job_id, reducer_amount):
+        query = "UPDATE job_metadata.jobs SET reducer_amount = %s WHERE job_id = %s;"
+        with self.conn.cursor() as cur:
+            cur.execute(query, (reducer_amount, job_id))
             self.conn.commit()
 
     def increment_and_fetch_counters(self, job_id):
@@ -110,7 +120,8 @@ class Database:
         query = "SELECT job_id FROM job_metadata.jobs WHERE job_status IN %s;"
         with self.conn.cursor() as cur:
             cur.execute(query, (tuple(statuses),))
-            return [row[0] for row in cur.fetchall()]
+            job_ids = [row[0] for row in cur.fetchall()]
+            return job_ids
 
     def insert_task(self, job_id, task_id, task_type):
         query = """INSERT INTO job_metadata.tasks (job_id, task_id, task_type)

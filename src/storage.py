@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 RUSTFS_USERNAME = 'admin'
 RUSTFS_PASSWORD = 'admin'
-RUSTFS_URL = 'http://localhost:9000'
+RUSTFS_URL = 'http://rustfs-0.rustfs-service:9000'
 
 class S3ConnectionError(Exception):
     pass
@@ -48,16 +48,18 @@ class S3Storage:
                 case _:
                     raise S3ConnectionError(f'Unknown error: {e}')
 
-    def init_s3(self):
+    def init_s3(self, init_bucket):
         with self._handle_errors():
             self.conn = boto3.client(
-                's3',
+                service_name='s3',
                 endpoint_url=RUSTFS_URL,
                 aws_access_key_id=RUSTFS_USERNAME,
                 aws_secret_access_key=RUSTFS_PASSWORD,
                 config=Config(signature_version='s3v4'), # The version of the signatures the authenticates AWS requests. RustFS wants s3v4
                 region_name='us-east-1' # Apparently RustFS expects us to use us-east-1
             )
+
+            self.create_bucket(init_bucket)
             return self.conn
 
     def create_bucket(self, bucket_name):
@@ -126,6 +128,13 @@ class S3Storage:
             )
             return response
 
+    def stream_key_lines(self, bucket, key):
+        with self._handle_errors():
+            response = self.get_key(bucket, key)
+            for line in response['Body'].iter_lines():
+                # CAREFUL: the line will not have the linebreak in its end
+                yield line
+
     def stream_file_pairs(self, bucket, key):
         '''
         Works with JSONL files of the format:
@@ -134,17 +143,12 @@ class S3Storage:
         etc...
         '''
         with self._handle_errors():
-            response = self.conn.get_object(
-                Bucket=bucket,
-                Key=key
-            )
-            for line in response['Body'].iter_lines():
+            for line in self.stream_key_lines(bucket, key):
                 pairs = json.loads(line)
                 if not isinstance(pairs, dict):
                     raise S3ConnectionError('Invalid line found in JSON')
                 for key, value in pairs.items():
                     yield key, value
-
 
     def get_key(self, bucket, key):
         with self._handle_errors():
@@ -157,10 +161,7 @@ class S3Storage:
     # TODO: Merge this with a general method
     def get_json_body(self, bucket, key):
         with self._handle_errors():
-            body = self.conn.get_object(
-                Bucket=bucket,
-                Key=key
-            )['Body']
+            body = self.get_key(bucket, key)['Body']
             return json.load(body)
 
     def sort_json(self, src_bucket, src_key, dst_bucket, dst_key):
@@ -354,3 +355,26 @@ class S3Storage:
                 Key=key,
                 MultipartUpload={'Parts': parts}
             )
+
+    def split_key_to_chunks(self, bucket, key, destination_prefix, part_size):
+        with self._handle_errors():
+            buffer = bytearray()
+            part_index = 0
+            for line in self.stream_key_lines(bucket, key):
+                buffer.extend(line + b'\n')
+                if len(buffer) >= part_size:
+                    self.conn.put_object(
+                        Bucket=bucket,
+                        Key=f'{destination_prefix}{part_index}',
+                        Body=buffer
+                    )
+                    part_index += 1
+                    buffer.clear()
+            if buffer:
+                self.conn.put_object(
+                    Bucket=bucket,
+                    Key=f'{destination_prefix}{part_index}',
+                    Body=buffer
+                )
+                part_index += 1
+            return part_index
