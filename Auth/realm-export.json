@@ -702,8 +702,8 @@
       "alwaysDisplayInConsole": false,
       "clientAuthenticatorType": "client-secret",
       "redirectUris": [
-        "http://localhost:8000/auth/callback",
-        "http://localhost:8000/*"
+        "http://localhost:8080/auth/callback",
+        "http://localhost:8080/*"
       ],
       "webOrigins": [
         "*"

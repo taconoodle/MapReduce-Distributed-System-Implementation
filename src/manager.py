@@ -3,11 +3,9 @@ import logging
 import os
 import base64
 from contextlib import asynccontextmanager
-from enum import Enum, StrEnum
-import threading
+from enum import StrEnum
 
 from fastapi import FastAPI, HTTPException, Depends
-# from kubernetes import client, config, watch
 from kubernetes_asyncio import client, watch, config
 from kubernetes_asyncio.client import ApiClient
 from pydantic import BaseModel
@@ -17,7 +15,13 @@ from src.database import Database
 from src.storage import S3Storage
 
 
-logging.basicConfig(filename='/app/logs/manager.log', level=logging.INFO)
+logging.basicConfig(
+    filename='/app/logs/manager.log',
+    level=logging.INFO,
+    format='{asctime} - {levelname} - {module}:{funcName} -- {msg}',
+    style='{',
+    datefmt='%d/%m/%Y %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +36,6 @@ CHUNK_MAX_SIZE = 64 * 1024 * 1024
 # Enums
 class JobStatus(StrEnum):
     PENDING   = "Pending upload"
-    QUEUED    = "Queued"
     MAP       = "Map"
     SHUFFLE   = "Shuffle"
     REDUCE    = "Reduce"
@@ -63,7 +66,7 @@ class Manager:
         # config.load_kube_config()
 
     async def startup(self):
-        logger.info(f"[Manager {self.replica_id}] Starting up...")
+        logger.info(f"Starting up...")
 
         await self.init_services()
 
@@ -71,10 +74,20 @@ class Manager:
 
         watcher_task = asyncio.create_task(self.watch_all())
 
-        logger.info(f"[Manager {self.replica_id}] Startup complete and listening.")
+        logger.info(f"Startup complete and listening.")
         return watcher_task
 
     async def handle_k8s_job(self, k8s_job, job_id=None, job_chunk_num=None, job_reducer_num=None):
+        k8s_job_conditions = k8s_job.status.conditions or []
+        terminal_condition = next(
+            (condition for condition in k8s_job_conditions if
+             condition.status == "True" and condition.type in ["Complete", "Failed"]),
+            None
+        )
+        # We only want to handle jobs that have reached a terminal status
+        if not terminal_condition:
+            return
+
         # Inspect each K8s job and decide what action to take
         # based on its current status.
         job_id = k8s_job.metadata.labels.get('job_id') if job_id is None else job_id
@@ -85,28 +98,18 @@ class Manager:
         task_type = k8s_job.metadata.labels.get("task_type")
         total_workers = job_chunk_num if task_type == TaskType.MAP else job_reducer_num
 
-        k8s_job_conditions = k8s_job.status.conditions or []
-        terminal_condition = next(
-            (condition for condition in k8s_job_conditions if
-             condition.status == "True" and condition.type in ["Complete", "Failed"]),
-            None
-        )
-        logger.info(f'{job_id} - {task_id}: {terminal_condition}') # TODO: It's 4:14 in the fucking morning. The terminal condition is None. Find out why tomorrow please
-
-        if terminal_condition:
-            if terminal_condition.type == "Completed":
-                logger.info(f"[Manager: {self.replica_id}] Job: {job_id} -- Task: {task_id} SUCCEEDED.")
-                # self.db.update_task_status(job_id, task_id, TaskStatus.COMPLETED)
-                await self.handle_task_succeeded(job_id, task_id, task_type,
-                                                 total_workers)  # TODO: Check if we need to check if the DB task is already marked as completed
-            elif terminal_condition.type == "Failed":
-                # The task has exhausted all retries — permanent failure.
-                # Update the database and invoke the failure handler,
-                # which will stop the entire job.
-                logger.warning(f"[Manager: {self.replica_id}] Job: {job_id} -- Task: {task_id} FAILED. Terminating Job.")
-                # self.db.update_job_status(job_id, JobStatus.FAILED)
-                await self.cleanup_job(job_id, JobStatus.FAILED)
-                return 'Job Failed'
+        if terminal_condition.type == "Complete":
+            # logger.info(f"Job: {job_id} -- Task: {task_id} -- {task_type}: SUCCEEDED.")
+            await self.handle_task_succeeded(job_id, task_id, task_type,
+                                             total_workers)  # TODO: Check if we need to check if the DB task is already marked as completed
+        elif terminal_condition.type == "Failed":
+            # The task has exhausted all retries — permanent failure.
+            # Update the database and invoke the failure handler,
+            # which will stop the entire job.
+            logger.warning(f"Job: {job_id} -- Task: {task_id} -- {task_type}: FAILED. Terminating Job.")
+            # self.db.update_job_status(job_id, JobStatus.FAILED)
+            await self.cleanup_job(job_id, JobStatus.FAILED)
+            return 'Job Failed'
 
     async def restart_orphaned_tasks(self, job_id, active_k8s_jobs=None):
         # Detect orphaned tasks: present in the database but missing a
@@ -125,7 +128,7 @@ class Manager:
         }
         for task in tasks_in_db:
             if task['task_id'] not in active_k8s_task_ids and task['status'] != TaskStatus.COMPLETED:
-                logger.warning(f"[Reconcile] Job: {job_id} -- Task: {task['task_id']} is missing from Kubernetes. Rescheduling...")
+                logger.warning(f"Job: {job_id} -- Task: {task['task_id']} -- {task['task_type']} is missing from Kubernetes. Rescheduling...")
                 # TODO: We have to restart the K8s job
                 break
 
@@ -137,7 +140,7 @@ class Manager:
 
         # If no active jobs exist, no action is needed.
         if not active_jobs:
-            logger.info(f"[Manager: {self.replica_id}] No active jobs found in DB to recover.")
+            logger.info(f"No active jobs found in DB to recover.")
             return
 
         async with ApiClient() as api:
@@ -154,7 +157,12 @@ class Manager:
                     job_reducer_num = self.db.get_job_info(job_id, 'reducer_amount')
 
                     for k8s_job in k8s_jobs.items:
-                        if await self.handle_k8s_job(job_id, job_chunks, job_reducer_num, k8s_job) == 'Job Failed':
+                        task_id = k8s_job.metadata.labels.get("task_id")
+                        task_type = k8s_job.metadata.labels.get("task_type")
+                        if self.db.get_task_status(job_id, task_id, task_type) == TaskStatus.COMPLETED:
+                            continue
+
+                        if await self.handle_k8s_job(k8s_job, job_id, job_chunks, job_reducer_num) == 'Job Failed':
                             break
 
                     await self.restart_orphaned_tasks(job_id, k8s_jobs)
@@ -162,82 +170,89 @@ class Manager:
                 except Exception as e:
                     # If recover fails for one job, log the error
                     # and continue processing the remaining jobs.
-                    logger.error(f"[Recover] Error recovering job {job_id}: {e}")
+                    logger.error(f"Error recovering job {job_id}: {e}")
 
-        logger.info(f"[Manager {self.replica_id}] Recover complete.")
+        logger.info(f"Recover complete.")
 
     async def watch_all(self):
         # Only watch K8s jobs that belong to this Manager replica.
         selector = f"manager_id={self.replica_id}"
-        logger.info(f"[Manager: {self.replica_id}] Watcher started.")
+        logger.info(f"Watcher started.")
         try:
             while True:
                 try:
                     async with ApiClient() as api:
                         batch = client.BatchV1Api(api)
                         w = watch.Watch()
-                        async for event in w.stream(
-                                batch.list_namespaced_job,
-                                namespace=NAMESPACE,
-                                label_selector=selector
-                        ):
-                            k8s_job = event["object"]
-                            event_type = event["type"]
+                        async with w.stream(
+                                    batch.list_namespaced_job,
+                                    namespace=NAMESPACE,
+                                    label_selector=selector
+                            ) as stream:
+                            async for event in stream:
+                                k8s_job = event["object"]
+                                event_type = event["type"]
 
-                            labels = k8s_job.metadata.labels or {}
-                            job_id = labels.get("job_id")
-                            task_id = labels.get("task_id")
+                                labels = k8s_job.metadata.labels or {}
+                                job_id = labels.get("job_id")
+                                task_id = labels.get("task_id")
+                                task_type = labels.get("task_type")
 
-                            # Skip all events for jobs that have already been marked as FAILED —
-                            # no further processing is meaningful for a dead job.
-                            if self.db.get_job_status(job_id) == JobStatus.FAILED:
-                                continue
-                            # Ignore any event types outside the three we handle.
-                            if event_type not in ("MODIFIED", "DELETED"):
-                                continue
+                                task_status = self.db.get_task_status(job_id, task_id, task_type)
 
-                            if (event_type == "DELETED" and
-                                    self.db.get_task_status(job_id, task_id) != TaskStatus.COMPLETED):
-                                # If the task was deleted before completing, reschedule
-                                # If it was already COMPLETED,
-                                # the deletion is expected and we do nothing.
-                                logger.info(f"[Manager: {self.replica_id}] Job: {job_id} -- Task: {task_id} -- K8s Job crashed. Rescheduling...")
-                                # TODO: Reschedule K8s job
-                                continue
-                            elif event_type == "MODIFIED":
-                                # TODO: Call this below correctly
-                                logger.info(f'[Manager: {self.replica_id}] Job: {job_id} -- Task: {task_id} -- K8s Job completed. Handling:')
-                                await self.handle_k8s_job(k8s_job)
+                                # Skip all events for jobs that have already been marked as FAILED —
+                                # no further processing is meaningful for a dead job.
+                                if self.db.get_job_status(job_id) == JobStatus.FAILED:
+                                    continue
+                                # Ignore any event types outside the three we handle.
+                                if event_type not in ("MODIFIED", "DELETED"):
+                                    continue
+
+                                if event_type == "DELETED" and task_status == TaskStatus.PENDING:
+                                        # self.db.get_task_status(job_id, task_id) == TaskStatus.PENDING):
+                                    # If the task was deleted before completing, reschedule
+                                    # If it was already COMPLETED,
+                                    # the deletion is expected and we do nothing.
+                                    logger.info(f"Job: {job_id} -- Task: {task_id} -- {task_type}: K8s Job crashed. Rescheduling... In database it is: {task_status}")
+                                    # TODO: Reschedule K8s job
+                                    continue
+                                elif event_type == "MODIFIED":
+                                    if task_status == TaskStatus.COMPLETED:
+                                        continue
+                                    # logger.info(f'Job: {job_id} -- Task: {task_id} -- {task_type}: K8s Job modified. Handling:')
+                                    await self.handle_k8s_job(k8s_job)
 
                 except asyncio.CancelledError:
-                    logger.info(f"[Manager: {self.replica_id}] Watcher cancelled.")
+                    logger.info(f"Watcher cancelled.")
                     raise
                 except Exception as e:
-                    logger.error(f"[Manager: {self.replica_id}] Watcher error: {e}")
+                    logger.error(f"Watcher error: {e}")
                     await asyncio.sleep(5)
         finally:
-            logger.info(f"[Manager: {self.replica_id}] Watcher exited.")
+            logger.info(f"Watcher exited.")
 
     async def handle_task_succeeded(self,job_id, task_id, task_type, worker_num_for_phase_completion):
-        self.db.update_task_status(job_id,task_id,TaskStatus.COMPLETED)
+        self.db.update_task_status(job_id, task_id, TaskStatus.COMPLETED)
+        # logger.info(f'Job: {job_id} -- Task: {task_id} -- {task_type}: New task status: {self.db.get_task_status(job_id, task_id, task_type)}')
         completed = self.db.increment_and_fetch_counters(job_id)
 
-        logger.info(f"[Handler] job={job_id} {task_type} {task_id} ({completed}/{worker_num_for_phase_completion})")
+        logger.info(f"Job: {job_id} -- Task: {task_id} -- {task_type}: SUCCEEDED. ({worker_num_for_phase_completion - completed} remain for phase transition)")
 
         if completed == worker_num_for_phase_completion:
-            if task_type == "Map":
+            if task_type == TaskType.MAP:
                 # transition to shuffle
                 await self.transition_to_phase(job_id, TaskType.SHUFFLE)
 
-            elif task_type == "Shuffle":
+            elif task_type == TaskType.SHUFFLE:
                 # transition to reduce
                 await self.transition_to_phase(job_id, TaskType.REDUCE)
 
-            elif task_type == "Reduce":
+            elif task_type == TaskType.REDUCE:
                 # finalize the job
-                url = await self.finalize_job(job_id)
+                # url = await self.finalize_job(job_id) # TODO: ADD THIS BACK
+                await self.cleanup_job(job_id, JobStatus.SUCCEEDED) # TODO: Remove this
                 # notify UI
-                return url
+                # return url # TODO: ADD THIS BACK
 
         return None
 
@@ -265,20 +280,31 @@ class Manager:
             )
     """
 
-    async def send_cancel_signal_to_workers(self,job_id):
-        batch_v1 = client.BatchV1Api()
-        try:
-            batch_v1.delete_collection_namespaced_job(namespace=NAMESPACE,label_selector=f"job-id={job_id}")
-        except client.exceptions.ApiException as e:
-            print(f"Exception when calling BatchV1Api delete_namespaced_job: {e}")
-            return False
+    async def send_cancel_signal_to_workers(self, job_id):
+        async with ApiClient() as api:
+            batch_v1 = client.BatchV1Api(api)
+            try:
+                job_status = self.db.get_job_status(job_id)
+                logger.info(f'Job: {job_id} -- {job_status} finished. Sending cancel signal to workers')
+                await batch_v1.delete_collection_namespaced_job(
+                    namespace=NAMESPACE,
+                    label_selector=f"job_id={job_id}",
+                    body=client.V1DeleteOptions(propagation_policy="Background")
+                )
+                self.db.delete_all_tasks(job_id)
+                return True
+            except client.exceptions.ApiException as e:
+                print(f"Exception when calling BatchV1Api delete_namespaced_job: {e}")
+                return False
 
     async def transition_to_phase(self, job_id: str, new_phase: TaskType):
         await self.send_cancel_signal_to_workers(job_id)
-        self.db.update_job_status(job_id, new_phase.value)
+        self.db.update_job_status(job_id, new_phase)
         self.db.reset_phase_counter(job_id)
-        for task_idx in range(3): # TODO: 3 is a placeholder for the amount of shuffler/maangers
-            self.db.insert_task(job_id, task_idx, new_phase.value)
+
+        reduce_number = self.db.get_job_info(job_id, 'reducer_amount')
+        for task_idx in range(reduce_number): # TODO: 3 is a placeholder for the amount of shuffler/maangers
+            self.db.insert_task(job_id, task_idx, new_phase)
             if new_phase == TaskType.REDUCE:
                 reduce_fn_bytes = self.sfs.get_key(DATA_BUCKET, f'jobs/{job_id}/input_files/reduce_fn.pkl')['Body'].read()
                 reduce_fn = base64.b64encode(reduce_fn_bytes).decode('utf-8')
@@ -326,16 +352,16 @@ class Manager:
             self.db.insert_task(job_id, task_idx, TaskType.MAP)
             # TODO: python as the image is just a placeholder
             await self.spawn_worker(job_id, task_idx, TaskType.MAP,"python:3.14-slim", reducer_amt, map_fn)
-        self.db.update_job_status(job_id, JobStatus.QUEUED)
+        self.db.update_job_status(job_id, JobStatus.MAP)
 
     async def cleanup_job(self, job_id, job_status: JobStatus):
         await self.send_cancel_signal_to_workers(job_id)
 
         intermediate_prefix = f"jobs/{job_id}/intermediate_files/"
         try:
-            for key in self.sfs.stream_keys_in_dir(DATA_BUCKET, intermediate_prefix):
-                self.sfs.delete_from_bucket(DATA_BUCKET, key)
-            logger.info(f"[Job {job_id}] Intermediate storage cleared.")
+            # for key in self.sfs.stream_keys_in_dir(DATA_BUCKET, intermediate_prefix): # TODO: ADD THESE BACK
+            #     self.sfs.delete_from_bucket(DATA_BUCKET, key)
+            logger.info(f"Job: {job_id}: Intermediate storage cleared.")
         except Exception as e:
             logger.warning(f"Cleanup failed for job {job_id}: {e}")
 
@@ -359,7 +385,7 @@ class Manager:
         url = self.sfs.gen_url_to_get_key(DATA_BUCKET, final_output_path)
 
         await self.cleanup_job(job_id, JobStatus.SUCCEEDED)
-        logger.info(f"[Job {job_id}] Finalization complete.")
+        logger.info(f"Job {job_id}: Job complete.")
 
         return url
 
@@ -395,7 +421,7 @@ class Manager:
                 'manager_id': self.replica_id,
                 'job_id': str(job_id),
                 'task_id': str(task_id),
-                'task_type': phase.value
+                'task_type': phase
             }
             template = client.V1PodTemplateSpec(
                 metadata=client.V1ObjectMeta(labels=labels),
@@ -481,7 +507,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 class JobSubmitRequest(BaseModel):
-    user_id: int
+    user_id: str
     file_name: str
     file_size: int
     part_size: int
@@ -562,9 +588,8 @@ async def verify_token():#inside Depends something on Keycloak
     return
 
 @app.post("/cancel-job/{job_id}")
-async def cancel_job(self,job_id,token_data: dict = Depends(verify_token)):
-
-    success = await self.send_cancel_signal_to_workers(job_id)
+async def cancel_job(job_id, token_data: dict = Depends(verify_token)):
+    success = await manager_instance.send_cancel_signal_to_workers(job_id)
 
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,detail=f"Job {job_id} not found or already completed",)

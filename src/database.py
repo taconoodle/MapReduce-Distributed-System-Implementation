@@ -25,6 +25,7 @@ class Database:
             # "DROP TABLE job_metadata.tasks;", # TODO: Remove this after testing
             # "DROP TABLE job_metadata.jobs;", # TODO: Remove this after testing
             # "DROP SCHEMA job_metadata CASCADE;", # TODO: Remove this after testing
+            "CREATE SCHEMA IF NOT EXISTS keycloak;",
             "CREATE SCHEMA IF NOT EXISTS job_metadata;",
             """CREATE TABLE IF NOT EXISTS job_metadata.jobs (
                 job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -40,7 +41,7 @@ class Database:
                 job_id UUID REFERENCES job_metadata.jobs(job_id),
                 task_id INTEGER,
                 task_type VARCHAR(20),
-                task_status VARCHAR(20) DEFAULT 'Processing',
+                task_status VARCHAR(20) DEFAULT 'Pending',
                 PRIMARY KEY (job_id, task_id)
             );"""
         ]
@@ -73,7 +74,9 @@ class Database:
         query = "SELECT job_status FROM job_metadata.jobs WHERE job_id = %s;"
         with self.conn.cursor() as cur:
             cur.execute(query, (job_id,))
+            res = cur.fetchone()
             self.conn.commit()
+        return res[0] if res else None
 
     def update_job_chunks(self, job_id, total):
         query = "UPDATE job_metadata.jobs SET total_chunks = %s WHERE job_id = %s;"
@@ -92,13 +95,13 @@ class Database:
             UPDATE job_metadata.jobs
             SET current_phase_completed_tasks = current_phase_completed_tasks + 1
             WHERE job_id = %s
-            RETURNING current_phase_completed_tasks; 
+            RETURNING current_phase_completed_tasks;
         """
         #The old version
         #RETURNING current_phase_completed_tasks, total_chunks, job_status;
         with self.conn.cursor() as cur:
             cur.execute(query, (job_id,))
-            res = cur.fetchone()
+            res = cur.fetchone()[0]
             self.conn.commit()
             return res
 
@@ -106,8 +109,7 @@ class Database:
         query = "UPDATE job_metadata.jobs SET current_phase_completed_tasks = 0 WHERE job_id = %s;"
         with self.conn.cursor() as cur:
             cur.execute(query, (job_id,))
-            res = cur.fetchone()
-            return res[0] if res else None
+            self.conn.commit()
 
     def get_job_info(self, job_id: str, field="job_status"):
         query = sql.SQL("SELECT {} FROM job_metadata.jobs WHERE job_id = %s;").format(sql.Identifier(field))
@@ -130,10 +132,10 @@ class Database:
             cur.execute(query, (job_id, task_id, task_type))
             self.conn.commit()
 
-    def get_task_status(self, job_id, task_id):
-        query = "SELECT task_status FROM job_metadata.tasks WHERE job_id = %s AND task_id = %s;"
+    def get_task_status(self, job_id, task_id, task_type):
+        query = "SELECT task_status FROM job_metadata.tasks WHERE job_id = %s AND task_id = %s AND task_type = %s;"
         with self.conn.cursor() as cur:
-            cur.execute(query, (job_id, task_id))
+            cur.execute(query, (job_id, task_id, task_type))
             res = cur.fetchone()
             return res[0] if res else None
 
@@ -152,7 +154,7 @@ class Database:
 
     def get_tasks_for_job(self, job_id: str):
         query = """
-            SELECT task_id, task_type, worker_num, task_status 
+            SELECT task_id, task_type, task_status 
             FROM job_metadata.tasks 
             WHERE job_id = %s;
         """
@@ -165,8 +167,7 @@ class Database:
                 tasks.append({
                     "task_id": row[0],
                     "task_type": row[1],
-                    "worker_num": row[2],
-                    "status": row[3]
+                    "status": row[2]
                 })
             return tasks
 

@@ -1,15 +1,38 @@
-# Keycloak Server URL
-KC_SERVER_URL = "http://localhost:8080"
 REALM_NAME = "map-project"
 CLIENT_ID  = "map-reduce-client"
-# These are the standard OIDC URLs the UI needs 
-BASE_OIDC_URL = f"{KC_SERVER_URL}/realms/{REALM_NAME}/protocol/openid-connect"
-AUTH_URL    = f"{BASE_OIDC_URL}/auth"
-TOKEN_URL   = f"{BASE_OIDC_URL}/token"
-USERINFO_URL = f"{BASE_OIDC_URL}/userinfo"
-LOGOUT_URL  = f"{BASE_OIDC_URL}/logout"
-PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+
+
+##### THESE ARE USED TO REDIRECT THE BROWSER (PORT FOWARDING F'D US UP) #####
+
+# Keycloak Server URL
+KC_SERVER_BROWSER_URL = "http://localhost:30001"
+
+# These are the standard OIDC URLs the UI needs
+BASE_OIDC_BROWSER_URL = f"{KC_SERVER_BROWSER_URL}/realms/{REALM_NAME}/protocol/openid-connect"
+AUTH_BROWSER_URL    = f"{BASE_OIDC_BROWSER_URL}/auth"
+TOKEN_BROWSER_URL   = f"{BASE_OIDC_BROWSER_URL}/token"
+USERINFO_BROWSER_URL = f"{BASE_OIDC_BROWSER_URL}/userinfo"
+LOGOUT_BROWSER_URL  = f"{BASE_OIDC_BROWSER_URL}/logout"
+PUBLIC_BROWSER_KEY = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0f/Afex8CGzERpi7GnOCLAHD32OWyW0wl1/mgpjtcczqUaKe6bHSTTLGGF9RUfJp+kf3lTF+hTf/+JLI5g+32MxwbqNIYWSN9RYYXtPeuJdXh41qL67e5oExRLvgvP05FY/KBZAkCefnK+wISfb+kMSv+mTwc6+8tZ5pNTLLbkeH1BXCaalMcyrJM7FqlLAOYZ9i86qlwWE4KlMlN3gYdFYc6si4DaRM7bxH++XvVGBLhO/3xHbFq5GhMH2XA0D80WaIaz6uXjQ+rkahyr87TPKMCc4xb3vQb08r+Xyey1q+oYQpyH6dFzqkOQ/cKy1hM4n1mMLY83evjosAYI90/QIDAQAB
 -----END PUBLIC KEY-----"""
 # Where Keycloak sends the user after a successful login
-REDIRECT_URI = "http://localhost:8000/callback"
+REDIRECT_BROWSER_URI = "http://localhost:8080/callback"
+
+
+##### THESE ARE USERD FOR INTERNAL SERVICE COMMUNICATION #####
+
+# Keycloak Server URL
+KC_SERVER_CLUSTER_URL = "http://keycloak-service:8080"
+
+# These are the standard OIDC URLs the UI needs
+BASE_OIDC_CLUSTER_URL = f"{KC_SERVER_CLUSTER_URL}/realms/{REALM_NAME}/protocol/openid-connect"
+AUTH_CLUSTER_URL    = f"{BASE_OIDC_CLUSTER_URL}/auth"
+TOKEN_CLUSTER_URL   = f"{BASE_OIDC_CLUSTER_URL}/token"
+USERINFO_CLUSTER_URL = f"{BASE_OIDC_CLUSTER_URL}/userinfo"
+LOGOUT_CLUSTER_URL  = f"{BASE_OIDC_CLUSTER_URL}/logout"
+PUBLIC_CLUSTER_KEY = """-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAov5SfbBRCrhJhu3g33ncV1tRgqAHKD4nkK+uamTtwE8qCUu+X++zjUFRBhGYyB+gz0FhpyMi8xHAC/DZTbGmhxgXJAshNIHJHClHOaHKq/qpz2L2/umVqWW2ANMww/v8tq1Wm46sWKYawd8PWJvR9FRXWKrZFsY7pTKNcCIamHjlCsBOF2DFvoURcP+f6js1SBydezmjIbG+Q5t6bKZi+kQ3QPUbLlwkLwD+QWg07NXGUs7RHF68VUnt2yEuEox6U/7aZZ1Ojl6nCmUMi60mv5JV9QMqXCk01BH16WGQHU4XwKSPOjvvLF2RfgOWpcRcAfP29OQfF4wzxlegkUNRTQIDAQAB
+-----END PUBLIC KEY-----"""
+# Where Keycloak sends the user after a successful login
+REDIRECT_CLUSTER_URI = "http://gui-service:8080/callback"

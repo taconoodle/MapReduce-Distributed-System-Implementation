@@ -7,11 +7,12 @@ from GUI.utils import get_user_from_cookie
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse, HTMLResponse
-from GUI.constants import AUTH_URL, CLIENT_ID, REDIRECT_URI, TOKEN_URL
+from GUI.constants import *
 from jose import jwt
 
 app = FastAPI()
-MANAGER_URL = "http://localhost:8001"
+# MANAGER_URL = "http://localhost:8001"
+MANAGER_URL = "http://manager-0.manager-service:8000"
 # --- CLI SESSION STORAGE ---
 cli_sessions = {} 
 
@@ -21,7 +22,7 @@ app.mount("/static", StaticFiles(directory="GUI/templates"), name="static")
 # --- AUTHENTICATION FLOW ---
 
 @app.get("/")
-async def root(request: Request, state: str = None):
+async def root(request: Request, state: str | None = None):
     if request.cookies.get("auth_token"):
         return RedirectResponse(url="/dashboard")
     if state:
@@ -29,7 +30,7 @@ async def root(request: Request, state: str = None):
     return FileResponse('GUI/templates/login.html')
 
 @app.get("/login")
-async def login_trigger(state: str = None):
+async def login_trigger(state: str | None = None):
     
     code_verifier = secrets.token_urlsafe(64)
     
@@ -40,10 +41,10 @@ async def login_trigger(state: str = None):
 
 
     target = (
-        f"{AUTH_URL}?client_id={CLIENT_ID}"
+        f"{AUTH_BROWSER_URL}?client_id={CLIENT_ID}"
         f"&response_type=code"
         f"&scope=openid"
-        f"&redirect_uri={REDIRECT_URI}"
+        f"&redirect_uri={REDIRECT_BROWSER_URI}"
         f"&code_challenge={code_challenge}"
         f"&code_challenge_method=S256"
     )
@@ -65,12 +66,12 @@ async def auth_callback(request: Request, code: str, state: str = None):
         "grant_type": "authorization_code",
         "code": code,
         "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": REDIRECT_BROWSER_URI,
         "code_verifier": code_verifier,
     }
     
     # exchange code with token
-    keycloak_res = requests.post(TOKEN_URL, data=data)
+    keycloak_res = requests.post(TOKEN_CLUSTER_URL, data=data)
     token_data = keycloak_res.json()
     access_token = token_data.get("access_token")
 
@@ -180,7 +181,7 @@ async def submit_job(request: Request, file: UploadFile = File(...)):
     try:
         # extract user info from the JWT 
         payload = jwt.get_unverified_claims(token)
-        user_id = int(payload.get("sub"))
+        user_id = payload.get("sub")
         file_content = await file.read()
         await file.seek(0)
         actual_file_size = len(file_content)
@@ -191,7 +192,7 @@ async def submit_job(request: Request, file: UploadFile = File(...)):
             "user_id": user_id,
             "file_name": str(file.filename),
             "file_size": int(actual_file_size),
-            "part_size": 5242880  # Standard 5MB chunk size 
+            "part_size": 3 * 1024  # Standard 5MB chunk size
         }
         
         # requesting manager url to start the process
@@ -240,7 +241,7 @@ async def download_result(job_id: str, request: Request):
     if not token:
         return JSONResponse(status_code=401, content={"message": "Unauthorized"})
         
-    manager_url = f"http://manager-service:8000/internal/results/{job_id}"
+    manager_url = f"{MANAGER_URL}/internal/results/{job_id}"
     headers = {"Authorization": f"Bearer {token}"}
     try:
         # ask the manager for the job status and the result URL

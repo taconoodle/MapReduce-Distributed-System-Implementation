@@ -1,5 +1,4 @@
 fastapi
-kubernetes
 kubernetes_asyncio
 pydantic
 starlette

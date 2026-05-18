@@ -26,7 +26,7 @@ spec:
     matchLabels:
       app: manager
   serviceName: manager-service
-  replicas: 3
+#  replicas: 3
   template:
     metadata:
       labels:
@@ -60,10 +60,10 @@ metadata:
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
