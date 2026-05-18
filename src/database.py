@@ -111,6 +111,25 @@ class Database:
             cur.execute(query, (job_id,))
             self.conn.commit()
 
+    def count_and_set_counter(self, job_id):
+        query = """
+            WITH completed_tasks AS (
+                SELECT COUNT(*) AS completed_task_count
+                FROM job_metadata.tasks t
+                WHERE t.job_id = %s AND t.task_status = 'Completed'
+            )
+            UPDATE job_metadata.jobs j
+            SET current_phase_completed_tasks = ct.completed_task_count
+            FROM completed_tasks ct
+            WHERE j.job_id = %s
+            RETURNING current_phase_completed_tasks;
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(query, (job_id, job_id))
+            res = cur.fetchone()[0]
+            self.conn.commit()
+            return res
+
     def get_job_info(self, job_id: str, field="job_status"):
         query = sql.SQL("SELECT {} FROM job_metadata.jobs WHERE job_id = %s;").format(sql.Identifier(field))
         with self.conn.cursor() as cur:

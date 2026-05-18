@@ -4,8 +4,7 @@ import subprocess
 import time
 import requests
 
-# CURRENT_SYSTEM = 'linux'
-CURRENT_SYSTEM = 'windows'
+CURRENT_SYSTEM = os.name
 
 
 def start_port_forward(service, local_port=8000, remote_port=8000, namespace="default"):
@@ -14,7 +13,7 @@ def start_port_forward(service, local_port=8000, remote_port=8000, namespace="de
         "wsl", "kubectl", "port-forward",
         f"services/{service}",
         f"{local_port}:{remote_port}"
-    ] if CURRENT_SYSTEM == 'windows' else [
+    ] if CURRENT_SYSTEM == 'nt' else [
         "kubectl", "port-forward",
         f"services/{service}",
         f"{local_port}:{remote_port}"

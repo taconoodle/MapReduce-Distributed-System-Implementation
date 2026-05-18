@@ -126,11 +126,42 @@ class Manager:
         active_k8s_task_ids = {
             k8s_job.metadata.labels.get("task_id") for k8s_job in active_k8s_jobs.items
         }
+
+        job_status = self.db.get_job_status(job_id)
+        map_fn = None
+        reduce_fn = None
         for task in tasks_in_db:
             if task['task_id'] not in active_k8s_task_ids and task['status'] != TaskStatus.COMPLETED:
                 logger.warning(f"Job: {job_id} -- Task: {task['task_id']} -- {task['task_type']} is missing from Kubernetes. Rescheduling...")
-                # TODO: We have to restart the K8s job
-                break
+                # TODO: We have to restart the K8s jobs
+                # We declare beforehand the arguments we will use to respawn the worker as a dict
+                # The dict will get unpacked on call
+                spawn_worker_args = {
+                    'job_id': job_id,
+                    'task_id': task['task_id'],
+                    'phase': job_status,
+                    'image': 'python:3.14-slim'
+                }
+
+                # This block is a bit dumbly implemented TBH.
+                # Above, I have declared the map/reduce function variables as None, since they may be used or the may be not.
+                # If they are used they are set correctly the first time.
+                # To avoid unnecessary requests, check if the map/reduce function variables are set.
+                # If they have one, we don't need to ask the SFS for it again, since the value stays the same for the same job.
+                if job_status == JobStatus.MAP:
+                    if not map_fn:
+                        map_fn_bytes = self.sfs.get_key(DATA_BUCKET, f'jobs/{job_id}/input_files/map_fn.pkl')['Body'].read()
+                        map_fn = base64.b64encode(map_fn_bytes).decode('utf-8')
+                    spawn_worker_args['fn_to_pass'] = map_fn
+                elif job_status == JobStatus.REDUCE:
+                    if not reduce_fn:
+                        reduce_fn_bytes = self.sfs.get_key(DATA_BUCKET, f'jobs/{job_id}/input_files/reduce_fn.pkl')['Body'].read()
+                        reduce_fn = base64.b64encode(reduce_fn_bytes).decode('utf-8')
+                    spawn_worker_args['fn_to_pass'] = reduce_fn
+
+                # Unpack the args dict
+                await self.spawn_worker(**spawn_worker_args)
+
 
     async def recover_from_crash(self):
         # Statuses considered "active" — jobs in these stages
@@ -148,6 +179,10 @@ class Manager:
 
             for job_id in active_jobs:
                 try:
+                    job_phase_before_recovery = self.db.get_job_status(job_id)
+                    # First, synchronize the database on how many tasks are completed
+                    self.db.count_and_set_counter(job_id)
+
                     # Fetch only the K8s jobs that belong to this job
                     # and are managed by this Manager replica.
                     selector = f"job_id={job_id},manager_id={self.replica_id}"
@@ -165,7 +200,9 @@ class Manager:
                         if await self.handle_k8s_job(k8s_job, job_id, job_chunks, job_reducer_num) == 'Job Failed':
                             break
 
-                    await self.restart_orphaned_tasks(job_id, k8s_jobs)
+                    # We don't need to find hanging tasks if the job has already transitioned to the next phase
+                    if job_phase_before_recovery == self.db.get_job_status(job_id):
+                        await self.restart_orphaned_tasks(job_id, k8s_jobs)
 
                 except Exception as e:
                     # If recover fails for one job, log the error
@@ -200,25 +237,51 @@ class Manager:
 
                                 task_status = self.db.get_task_status(job_id, task_id, task_type)
 
-                                # Skip all events for jobs that have already been marked as FAILED —
-                                # no further processing is meaningful for a dead job.
-                                if self.db.get_job_status(job_id) == JobStatus.FAILED:
-                                    continue
-                                # Ignore any event types outside the three we handle.
-                                if event_type not in ("MODIFIED", "DELETED"):
+                                # 1. Skip all events for user jobs that have already been marked as FAILED —
+                                #    no further processing is meaningful for a dead job.
+                                # 2. Ignore any event types outside the three we handle.
+                                # 3. Skip the handling for the K8s jobs that have been marked as completed already
+                                #    no point in handling them (they'll get deleted on the phase transition)
+                                if self.db.get_job_status(job_id) == JobStatus.FAILED or \
+                                        event_type not in ("MODIFIED", "DELETED") or \
+                                        task_status == TaskStatus.COMPLETED:
                                     continue
 
                                 if event_type == "DELETED" and task_status == TaskStatus.PENDING:
-                                        # self.db.get_task_status(job_id, task_id) == TaskStatus.PENDING):
-                                    # If the task was deleted before completing, reschedule
+                                    # If the K8s job was deleted before completing, reschedule
                                     # If it was already COMPLETED,
                                     # the deletion is expected and we do nothing.
                                     logger.info(f"Job: {job_id} -- Task: {task_id} -- {task_type}: K8s Job crashed. Rescheduling... In database it is: {task_status}")
                                     # TODO: Reschedule K8s job
-                                    continue
+                                    # We declare beforehand the arguments we will use to respawn the worker as a dict
+                                    # The dict will get unpacked on call
+                                    spawn_worker_args = {
+                                        'job_id': job_id,
+                                        'task_id': task_id,
+                                        'phase': task_type,
+                                        'image': 'python:3.14-slim'
+                                    }
+
+                                    # This block is a bit dumbly implemented TBH.
+                                    # Above, I have declared the map/reduce function variables as None, since they may be used or the may be not.
+                                    # If they are used they are set correctly the first time.
+                                    # To avoid unnecessary requests, check if the map/reduce function variables are set.
+                                    # If they have one, we don't need to ask the SFS for it again, since the value stays the same for the same job.
+                                    if task_status == JobStatus.MAP:
+                                        if not map_fn:
+                                            map_fn_bytes = self.sfs.get_key(DATA_BUCKET, f'jobs/{job_id}/input_files/map_fn.pkl')['Body'].read()
+                                            map_fn = base64.b64encode(map_fn_bytes).decode('utf-8')
+                                        spawn_worker_args['fn_to_pass'] = map_fn
+                                    elif task_type == JobStatus.REDUCE:
+                                        if not reduce_fn:
+                                            reduce_fn_bytes = self.sfs.get_key(DATA_BUCKET, f'jobs/{job_id}/input_files/reduce_fn.pkl')['Body'].read()
+                                            reduce_fn = base64.b64encode(reduce_fn_bytes).decode('utf-8')
+                                        spawn_worker_args['fn_to_pass'] = reduce_fn
+
+                                    # Unpack the args dict
+                                    await self.spawn_worker(**spawn_worker_args)
+
                                 elif event_type == "MODIFIED":
-                                    if task_status == TaskStatus.COMPLETED:
-                                        continue
                                     # logger.info(f'Job: {job_id} -- Task: {task_id} -- {task_type}: K8s Job modified. Handling:')
                                     await self.handle_k8s_job(k8s_job)
 
@@ -396,7 +459,7 @@ class Manager:
         async with ApiClient() as api:
             batch_v1 = client.BatchV1Api(api)
 
-            worker_name = f"job-{job_id}-{phase.value.lower()}-{task_id}"
+            worker_name = f"job-{job_id}-{phase.lower()}-{task_id}"
 
             env_variables = [
                     client.V1EnvVar(name="JOB_ID", value=str(job_id)),
